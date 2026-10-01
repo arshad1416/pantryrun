@@ -25,7 +25,7 @@
       "autoIncrement": false,
       "distribution": "internal",
       "ios": {
-        "image": "macos-tahoe-26.4-xcode-26.4",
+        "image": "macos-tahoe-26.5-xcode-26.6",
         "resourceClass": "m-medium",
         "simulator": true
       }
