@@ -24,9 +24,11 @@
  * HONEST LIMITATION (mirrored in the privacy policy): expo-secure-store has
  * no key-enumeration API, so recovery/passkey entries prefixed with a family
  * or device id this install has forgotten cannot be addressed by name and may
- * survive. The wipe therefore destroys groceryapp.master_key and the device
- * keypair FIRST-CLASS: whatever residue remains is ciphertext or key material
- * for identities that no longer exist, undecryptable by anyone.
+ * survive. The wipe attempts to delete the master key and device keypair,
+ * but a failed stage may leave keys behind. Forgotten recovery/passkey entries
+ * may also remain usable. Other family devices, recovery phrase holders, and
+ * relay copies are unaffected; local deletion cannot guarantee those copies
+ * become unreadable.
  *
  * The wipe is deliberately best-effort per stage: a failure in one stage is
  * recorded and the remaining stages still run, so a single broken subsystem

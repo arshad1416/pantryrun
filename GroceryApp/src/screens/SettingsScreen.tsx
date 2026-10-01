@@ -1013,7 +1013,7 @@ export default function SettingsScreen({ navigation }: Props) {
           onPress={() => {
             Alert.alert(
               'Delete All Data?',
-              'This permanently erases all grocery lists, settings, and encryption keys on this device. Without your 12-word recovery phrase (or another family device), this data is UNRECOVERABLE — there is no account and no server-side reset. Encrypted copies on your relay expire automatically within 30 days and can never be decrypted again.',
+              'This deletes local grocery lists, settings, and encryption keys this install can address. Without your 12-word recovery phrase (or another family device), deleted data is UNRECOVERABLE — there is no account and no server-side reset. This does not erase copies on other family devices or your relay. Forgotten recovery or passkey entries may remain in secure storage.',
               [
                 { text: 'Cancel', style: 'cancel' },
                 {
@@ -1027,12 +1027,12 @@ export default function SettingsScreen({ navigation }: Props) {
                       if (failed.length === 0) {
                         Alert.alert(
                           'All Data Deleted',
-                          'Everything stored on this device has been erased. Restart the app to start fresh.',
+                          'Local deletion completed for the data this install can address. Copies on other family devices or your relay were not erased. Restart the app to start fresh.',
                         );
                       } else {
                         Alert.alert(
                           'Deleted With Warnings',
-                          `Your encryption keys were destroyed, but these steps reported errors: ${failed.join(', ')}. Uninstalling the app removes anything left over.`,
+                          `Some local data or encryption keys may remain because these steps failed: ${failed.join(', ')}. Restart the app and retry deletion. Copies on other family devices or your relay were not erased.`,
                         );
                       }
                     } catch (err) {

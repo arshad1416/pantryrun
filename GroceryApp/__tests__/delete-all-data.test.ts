@@ -7,10 +7,9 @@
  *   - every in-memory Yjs document,
  *   - the settings store,
  *   - every addressable groceryapp.* secure-store entry,
- * and — because expo-secure-store cannot enumerate keys — it must destroy
- * groceryapp.master_key and the device keypair so that any UNADDRESSABLE
- * residue (recovery/passkey entries for forgotten families/devices) is
- * cryptographic garbage. That limitation is disclosed in privacy/index.html.
+ * and delete groceryapp.master_key and the device keypair. SecureStore cannot
+ * enumerate forgotten recovery/passkey entries; wiping known keys does not
+ * guarantee forgotten entries or other family/relay copies become unreadable.
  *
  * UI wiring (confirmation dialog wording, destructive action) is pinned by
  * source scan in the suite's established idiom (no RN renderer here).
@@ -163,6 +162,24 @@ describe('deleteAllLocalData()', () => {
 });
 
 describe('Delete All Data — UI wiring and policy text (source scan)', () => {
+  it('does not promise key destruction when a wipe stage failed', () => {
+    const src = read('src/screens/SettingsScreen.tsx');
+    expect(src).not.toContain('Your encryption keys were destroyed, but');
+    expect(src).toContain('Some local data or encryption keys may remain');
+  });
+
+  it('does not promise erasure of family or relay copies', () => {
+    const src = read('src/screens/SettingsScreen.tsx');
+    expect(src).not.toContain('can never be decrypted again');
+    expect(src).toContain('does not erase copies on other family devices or your relay');
+  });
+
+  it('links to the reachable privacy and terms pages used by the store', () => {
+    const src = read('src/screens/PrivacyScreen.tsx');
+    expect(src).toContain("const PRIVACY_URL = 'https://www.pantryrun.app/privacy'");
+    expect(src).toContain("const TERMS_URL = 'https://www.pantryrun.app/terms'");
+  });
+
   it('SettingsScreen has a confirmed destructive Delete All Data action calling dataWipe', () => {
     const src = read('src/screens/SettingsScreen.tsx');
     expect(src).toContain("import('../services/dataWipe')");
@@ -175,10 +192,12 @@ describe('Delete All Data — UI wiring and policy text (source scan)', () => {
     expect(src).toContain("style: 'destructive'");
   });
 
-  it('privacy policy documents the wipe and the undecryptable-residue guarantee', () => {
+  it('privacy policy documents the wipe and forgotten-key limitation', () => {
     const html = read('privacy/index.html');
     expect(html).toContain('Delete All Data');
     expect(html).toContain('undecryptable');
     expect(html).toMatch(/cannot enumerate/i);
+    expect(html).toContain('cannot guarantee');
+    expect(html).toContain('This does not erase copies on other family devices or your relay');
   });
 });

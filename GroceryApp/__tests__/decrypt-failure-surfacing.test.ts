@@ -81,12 +81,12 @@ async function makeClient() {
   client.onRemoteUpdate = (listId) => applied.push(listId);
   // handleMessage is private; driving it directly is the point — it is the
   // function the socket calls, and there is no relay in this suite.
-  // MUST init: y-websocket keeps `sodium` in a module-level lazy binding that
-  // only getSodium() — called from init() — populates. Without this every
-  // decryptUpdate throws "Cannot read properties of null", so a test would
-  // report a decrypt failure for a PERFECTLY VALID envelope and pass for
-  // entirely the wrong reason. The relay does not exist; init tolerates that
-  // (same idiom as ac4-offline.test.ts).
+  // MUST init: getSodium() populates the lazy binding needed for real decrypts.
+  // Only replace connect: these tests drive handleMessage directly and must
+  // never open a real socket. Node 22's built-in WebSocket otherwise reports a
+  // late connection failure to the deliberately throwing onError listener,
+  // crashing Jest after the assertions pass. Node 20 has no global WebSocket.
+  jest.spyOn(client, 'connect').mockImplementation(() => {});
   await client.init();
 
   const deliver = (msg: unknown) => (client as any).handleMessage(msg);

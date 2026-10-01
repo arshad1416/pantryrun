@@ -128,8 +128,8 @@ function LinkRow({ icon, label, onPress, theme, danger }: LinkRowProps) {
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Privacy'>;
 
-const PRIVACY_URL = 'https://groceryapp.app/privacy';
-const TERMS_URL = 'https://groceryapp.app/privacy#terms';
+const PRIVACY_URL = 'https://www.pantryrun.app/privacy';
+const TERMS_URL = 'https://www.pantryrun.app/terms';
 
 export default function PrivacyScreen({ navigation }: Props) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -177,7 +177,7 @@ export default function PrivacyScreen({ navigation }: Props) {
         <InfoRow
           icon="🔒"
           label="Encrypted Storage"
-          description="All grocery data is encrypted with XChaCha20-Poly1305 and stored locally on your device."
+          description="Sensitive list and item text is encrypted with XChaCha20-Poly1305. Quantities, categories, timestamps, and notification history remain readable in the local database, protected by your device's storage security."
           theme={theme}
         />
         <InfoRow
@@ -201,7 +201,7 @@ export default function PrivacyScreen({ navigation }: Props) {
         <InfoRow
           icon="🔑"
           label="Secure Keys"
-          description="Encryption keys and pairing codes are stored in your device's secure enclave."
+          description="Encryption keys and pairing codes are stored through the operating system's secure credential storage (Keychain on iOS and Keystore-backed storage on Android)."
           theme={theme}
         />
       </Section>
@@ -306,8 +306,8 @@ export default function PrivacyScreen({ navigation }: Props) {
         />
         <LinkRow
           icon="✉️"
-          label="Contact: privacy@groceryapp.app"
-          onPress={() => Linking.openURL('mailto:privacy@groceryapp.app')}
+          label="Contact: privacy@pantryrun.app"
+          onPress={() => Linking.openURL('mailto:privacy@pantryrun.app')}
           theme={theme}
         />
       </Section>
