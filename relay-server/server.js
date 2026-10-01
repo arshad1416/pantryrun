@@ -1880,6 +1880,36 @@ function handleMessage(sender, message) {
       break;
     }
 
+    case 'sync_request':
+    case 'recovery_request':
+    case 'recovery_response': {
+      const senderInfo = clientInfo.get(sender);
+      if (!sender._relayToken || !senderInfo || senderInfo.familyId !== message.familyId) {
+        sendTo(sender, { type: 'error', message: 'Not authenticated for this family room' });
+        return;
+      }
+      if (!checkRateLimit(sender._relayToken)) {
+        sendTo(sender, { type: 'error', message: 'Rate limit exceeded (max 100 messages/min)' });
+        return;
+      }
+      const { listId, payload } = message;
+      if (typeof listId !== 'string' || !listId || !payload ||
+          !['ciphertext', 'iv', 'tag'].every(field => typeof payload[field] === 'string' && payload[field])) {
+        sendTo(sender, { type: 'error', message: 'Sync control message requires listId and encrypted payload' });
+        return;
+      }
+      // The relay forwards opaque control ciphertext only. A completed recovery
+      // snapshot and its nonce are authenticated by family devices inside it.
+      // Bind sender identity to enrollment, never to the caller's deviceId.
+      for (const client of familyRooms.get(senderInfo.familyId) || []) {
+        if (client !== sender && client.readyState === client.OPEN) {
+          sendTo(client, { type: message.type, familyId: senderInfo.familyId,
+            deviceId: senderInfo.deviceId, listId, payload });
+        }
+      }
+      break;
+    }
+
     case 'update': {
       // Check authentication
       if (!sender._relayToken) {

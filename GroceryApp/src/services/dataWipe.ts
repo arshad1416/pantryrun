@@ -75,9 +75,7 @@ export async function deleteAllLocalData(): Promise<WipeResult> {
   const result: WipeResult = { completed: [], errors: {} };
 
   // 1. Stop syncing so nothing re-persists while we wipe.
-  await runStage('disconnect-sync', () => {
-    syncManager.disconnect();
-  }, result);
+  await runStage('disconnect-sync', () => syncManager.disconnect(), result);
 
   // 2. Attempt known-key cleanup before clearing the identities used to locate it.
   //    clearRecoveryPhrase() and clearPasskeyData() must run BEFORE membership
@@ -118,7 +116,7 @@ export async function deleteAllLocalData(): Promise<WipeResult> {
     useListStore.setState({ lists: {} } as any);
     useGroceryStore.setState({ items: {} } as any);
     useFamilyStore.setState({ members: {} } as any);
-    useSyncStore.setState({ syncState: 'not_configured', error: null } as any);
+    useSyncStore.setState({ syncState: 'not_configured', error: null, persistenceError: null, storageRecoveryError: null, recoveryPendingLists: [] } as any);
     usePriceStore.getState().clearPrices();
     usePriceStore.getState().clearPerStorePrices();
   }, result);

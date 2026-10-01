@@ -14,6 +14,9 @@ export default function SyncIndicator() {
   const lastSyncedAt: number | null = useSyncStore((s) => s.lastSyncedAt);
   const errorMessage: string | null = useSyncStore((s) => s.error);
   const undecryptableLists = useSyncStore((s) => s.undecryptableLists);
+  const recoveryPendingLists = useSyncStore((s) => s.recoveryPendingLists);
+  const persistenceError = useSyncStore((s) => s.persistenceError);
+  const storageRecoveryError = useSyncStore((s) => s.storageRecoveryError);
   const activeTheme = useActiveTheme();
   const theme = activeTheme === 'dark' ? themeColors.dark : themeColors.light;
 
@@ -21,12 +24,15 @@ export default function SyncIndicator() {
     syncState,
     error: errorMessage,
     undecryptableLists,
+    recoveryPendingLists,
+    persistenceError,
+    storageRecoveryError,
   });
 
   // Don't show a "last synced" time when nothing has ever synced — nor when
   // the data cannot be read, where a fresh timestamp reads as reassurance.
   const timeLabel =
-    lastSyncedAt && syncState !== 'not_configured' && undecryptableLists.length === 0
+    lastSyncedAt && syncState !== 'not_configured' && undecryptableLists.length === 0 && recoveryPendingLists.length === 0
       ? new Date(lastSyncedAt).toLocaleTimeString()
       : '';
 

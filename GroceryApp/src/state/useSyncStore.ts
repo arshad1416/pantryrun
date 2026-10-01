@@ -20,6 +20,8 @@ export interface SyncStateShape {
   pendingUploads: number;
   pendingDownloads: number;
   error: string | null;
+  persistenceError: string | null;
+  storageRecoveryError: string | null;
 
   /**
    * How many ciphertexts have failed authentication this session, and where
@@ -34,6 +36,8 @@ export interface SyncStateShape {
    * only an explicit clear removes it.
    */
   undecryptableLists: readonly string[];
+  /** Preserved value-only/corrupt lists waiting for original CRDT recovery. */
+  recoveryPendingLists: readonly string[];
 
   // Actions
   setSyncState: (state: SyncState) => void;
@@ -67,6 +71,9 @@ export function syncIndicatorStatus(s: {
   syncState: SyncState;
   error: string | null;
   undecryptableLists: readonly string[];
+  recoveryPendingLists?: readonly string[];
+  persistenceError?: string | null;
+  storageRecoveryError?: string | null;
 }): { label: string; color: string } {
   // Checked FIRST, ahead of syncState. A device whose key does not match the
   // family's data is connected, online, and reporting 'idle' — every signal
@@ -77,6 +84,10 @@ export function syncIndicatorStatus(s: {
     return { label: "Can't read family lists", color: '#f44336' };
   }
 
+  if (s.persistenceError) return { label: s.persistenceError, color: '#f44336' };
+  if (s.storageRecoveryError) return { label: s.storageRecoveryError, color: '#f44336' };
+  if (s.recoveryPendingLists?.length) return { label: 'List recovery needed — sharing paused', color: '#f44336' };
+
   if (s.syncState === 'syncing') return { label: 'Syncing...', color: '#FF9800' };
   // In the error state, prefer the specific message set by whoever reported
   // it (e.g. "Couldn't save recent changes to this device" for a failed local
@@ -84,7 +95,8 @@ export function syncIndicatorStatus(s: {
   if (s.syncState === 'error') return { label: s.error || 'Sync error', color: '#f44336' };
   if (s.syncState === 'offline') return { label: 'Offline', color: '#999' };
   if (s.syncState === 'not_configured') return { label: 'Local only', color: '#999' };
-  return { label: 'Synced', color: '#10B981' };
+  // An authenticated socket is not proof that another device applied our edits.
+  return { label: 'Connected', color: '#10B981' };
 }
 
 // ─── Store ──────────────────────────────────────────────────────────────────
@@ -98,7 +110,10 @@ export const useSyncStore = create<SyncStateShape>((set, get) => ({
   pendingUploads: 0,
   pendingDownloads: 0,
   error: null,
+  persistenceError: null,
+  storageRecoveryError: null,
   undecryptableLists: [],
+  recoveryPendingLists: [],
 
   setSyncState: (syncState) => {
     // Going local-only retracts the warning. bootstrapSync sets this when the
@@ -173,7 +188,7 @@ export const useSyncStore = create<SyncStateShape>((set, get) => ({
   },
 
   clearError: () => {
-    set({ error: null });
+    set({ error: null, persistenceError: null });
   },
 
   /**

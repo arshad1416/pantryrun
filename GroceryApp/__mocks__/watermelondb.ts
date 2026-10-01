@@ -146,7 +146,14 @@ class Collection {
   }
 }
 
+const localValues = new Map<string, any>();
+
 export class Database {
+  localStorage = {
+    get: async (key: string) => localValues.get(key),
+    set: async (key: string, value: any) => { localValues.set(key, value); },
+    remove: async (key: string) => { localValues.delete(key); },
+  };
   constructor(_opts?: any) {}
 
   get(table: string): Collection {
@@ -166,6 +173,7 @@ export class Database {
   async unsafeResetDatabase(): Promise<void> {
     ensureInWriter('Database.unsafeResetDatabase()');
     tables.clear();
+    localValues.clear();
   }
 }
 
@@ -215,6 +223,7 @@ export default class SQLiteAdapter {
 
 export function _resetDB(): void {
   tables.clear();
+  localValues.clear();
   writerDepth = 0;
 }
 

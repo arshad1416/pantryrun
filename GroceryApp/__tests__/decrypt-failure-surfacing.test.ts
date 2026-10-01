@@ -176,18 +176,18 @@ describe('what the user actually sees', () => {
     // indicator read "Synced".
     useSyncStore.getState().setConnectionState('connected');
     expect(useSyncStore.getState().syncState).toBe('idle');
-    expect(rendered().label).toBe('Synced');
+    expect(rendered().label).toBe('Connected');
 
     useSyncStore.getState().noteDecryptFailure('list-1');
 
-    expect(rendered().label).not.toBe('Synced');
+    expect(rendered().label).not.toBe('Connected');
     expect(rendered().label).toMatch(/can't read/i);
     expect(rendered().color).toBe('#f44336');
   });
 
   it('survives a reconnect — a key mismatch is not cured by reconnecting', () => {
     useSyncStore.getState().noteDecryptFailure('list-1');
-    expect(rendered().label).not.toBe('Synced');
+    expect(rendered().label).not.toBe('Connected');
 
     // The exact sequence that used to erase it: syncState is recomputed from
     // the socket on every transition, and a wrong-key device connects fine.
@@ -196,7 +196,7 @@ describe('what the user actually sees', () => {
     useSyncStore.getState().setConnectionState('connected');
 
     expect(useSyncStore.getState().syncState).toBe('idle');
-    expect(rendered().label).not.toBe('Synced');
+    expect(rendered().label).not.toBe('Connected');
   });
 
   it('hides the "last synced" timestamp, which reads as reassurance', () => {
@@ -204,7 +204,7 @@ describe('what the user actually sees', () => {
     expect(useSyncStore.getState().lastSyncedAt).not.toBeNull();
 
     useSyncStore.getState().noteDecryptFailure('list-1');
-    expect(rendered().label).not.toBe('Synced');
+    expect(rendered().label).not.toBe('Connected');
   });
 
   it('routes a DecryptFailureError to the sticky channel, others to syncState', () => {
@@ -258,7 +258,7 @@ describe('what the user actually sees', () => {
     // bootstrap wrote `error` without `syncState`, and the label only consults
     // `error` in the error state — so the message went nowhere.
     expect(syncIndicatorStatus({ syncState: 'idle', error: 'boom', undecryptableLists: [] }).label).toBe(
-      'Synced',
+      'Connected',
     );
     expect(
       syncIndicatorStatus({ syncState: 'error', error: 'boom', undecryptableLists: [] }).label,
@@ -267,7 +267,7 @@ describe('what the user actually sees', () => {
 
   it('leaves every non-failing state alone', () => {
     const cases: Array<[Parameters<typeof syncIndicatorStatus>[0], string]> = [
-      [{ syncState: 'idle', error: null, undecryptableLists: [] }, 'Synced'],
+      [{ syncState: 'idle', error: null, undecryptableLists: [] }, 'Connected'],
       [{ syncState: 'syncing', error: null, undecryptableLists: [] }, 'Syncing...'],
       [{ syncState: 'offline', error: null, undecryptableLists: [] }, 'Offline'],
       [{ syncState: 'not_configured', error: null, undecryptableLists: [] }, 'Local only'],
