@@ -56,21 +56,7 @@ export const linkingConfig: LinkingOptions<RootStackParamList> = {
       Settings: 'settings',
     },
   },
-  /**
-   * Custom URL parsing for invite tokens.
-   * Handles both `groceryapp://invite?token=...` and
-   * `https://groceryapp.app/invite?token=*** formats.
-   */
-  getInitialURL: () => {
-    // Default React Navigation behavior — let the linking subsystem
-    // handle initial URL from native modules.
-    return undefined;
-  },
-  subscribe: (listener) => {
-    // Default React Navigation subscription — handled by native linking.
-    // Could be extended with expo-linking for more control.
-    return () => {};
-  },
+  // Use React Navigation's native initial-URL and URL-event handlers.
 };
 
 /**
