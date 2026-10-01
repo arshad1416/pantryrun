@@ -25,6 +25,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useListStore } from '../state/useListStore';
 import { useFamilyStore } from '../state/useFamilyStore';
+import { syncManager } from '../sync/sync-manager';
 import { useSyncStore, syncIndicatorStatus } from '../state/useSyncStore';
 import { type GroceryList, BUILT_IN_CATEGORIES } from '../types';
 import type { RootStackParamList } from '../navigation/deepLinks';
@@ -71,6 +72,12 @@ export default function HomeScreen({ navigation }: Props) {
   const syncState = useSyncStore((s) => s.syncState);
   const syncError = useSyncStore((s) => s.error);
   const undecryptableLists = useSyncStore((s) => s.undecryptableLists);
+  const recoveryPendingLists = useSyncStore((s) => s.recoveryPendingLists);
+  const persistenceError = useSyncStore((s) => s.persistenceError);
+  const storageRecoveryError = useSyncStore((s) => s.storageRecoveryError);
+
+  const [copyingListId, setCopyingListId] = useState<string | null>(null);
+  const copyingRef = useRef(false);
 
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -192,6 +199,32 @@ export default function HomeScreen({ navigation }: Props) {
     },
     [navigation],
   );
+
+  const handleSharedRecoveryCopy = useCallback((list: GroceryList) => {
+    if (copyingRef.current) return;
+    Alert.alert('Create a new shared recovery copy?',
+      `A new shared list will contain the saved version of “${list.name}” when you tap Create copy. The original list and its pending changes stay on this device with sharing paused. Deleted items stay deleted.`, [
+        {text: 'Cancel', style: 'cancel'},
+        {text: 'Create copy', onPress: async () => {
+          if (copyingRef.current) return;
+          copyingRef.current = true;
+          setCopyingListId(list.id);
+          try {
+            const copy = await syncManager.createSharedRecoveryCopy(list.id);
+            await loadLists();
+            if (copy.isDeleted) {
+              Alert.alert('Existing recovery copy was deleted', 'The saved recovery copy stays deleted. The original list and its pending changes remain preserved on this device.');
+              return;
+            }
+            Alert.alert('Shared recovery copy saved',
+              `“${copy.name}” is ready to share when connected. The original remains saved on this device with sharing paused.`,
+              [{text: 'Open copy', onPress: () => handleListPress(copy)}]);
+          } catch (err) {
+            Alert.alert('Recovery copy needs attention', err instanceof Error ? err.message : 'Could not save the copy. The original data is retained.');
+          } finally { copyingRef.current = false; setCopyingListId(null); }
+        }},
+      ]);
+  }, [loadLists, handleListPress]);
 
   // Name-on-create + rename share one small modal (Alert.prompt is iOS-only).
   const [nameModal, setNameModal] = useState<
@@ -517,9 +550,9 @@ export default function HomeScreen({ navigation }: Props) {
   // route (App.tsx) and SyncIndicator lives only in GroceryListScreen's header,
   // the reassuring copy was the one nearly every user saw. Two ladders over one
   // store is how a status display ends up contradicting itself.
-  const syncStatus = syncIndicatorStatus({ syncState, error: syncError, undecryptableLists });
+  const syncStatus = syncIndicatorStatus({ syncState, error: syncError, undecryptableLists, recoveryPendingLists, persistenceError, storageRecoveryError });
   const syncDotColor =
-    syncState === 'syncing'
+    syncState === 'syncing' && syncStatus.color !== '#f44336'
       ? theme.accent
       : syncStatus.color === '#10B981'
         ? theme.primary
@@ -846,7 +879,7 @@ export default function HomeScreen({ navigation }: Props) {
           </View>
 
           {/* Sync indicator — tappable when not set up, to reach Pairing */}
-          {syncState === 'not_configured' ? (
+          {syncStatus.label === 'Local only' ? (
             <TouchableOpacity
               style={styles.syncBar}
               onPress={() => navigation.navigate('Pairing')}
@@ -862,10 +895,25 @@ export default function HomeScreen({ navigation }: Props) {
             <View style={styles.syncBar}>
               <View style={[styles.syncDot, { backgroundColor: syncDotColor }]} />
               <Text style={[styles.syncText, { color: theme.secondaryText }]}>
-                {syncStatus.label === 'Synced' ? 'Connected' : syncStatus.label}
+                {syncStatus.label === 'List recovery needed — sharing paused' ? 'Some lists need recovery' : syncStatus.label}
               </Text>
             </View>
           )}
+
+          {recoveryPendingLists.map(id => lists[id]).filter((list): list is GroceryList => !!list && !list.isDeleted).map(list => (
+            <View key={`recovery-${list.id}`} style={[styles.recoveryBanner, {backgroundColor: isDark ? 'rgba(255, 152, 0, 0.12)' : '#FFF8E1'}]}>
+              <View style={styles.recoveryBannerTextWrap}>
+                <Text style={[styles.recoveryBannerTitle, {color: theme.text}]}>{list.name}</Text>
+                <Text style={[styles.syncText, {color: theme.secondaryText}]}>Saved on this device — sharing paused</Text>
+                <TouchableOpacity onPress={() => handleSharedRecoveryCopy(list)} disabled={!!copyingListId}
+                  accessibilityRole="button" accessibilityLabel={`Create a new shared recovery copy of ${list.name}`}>
+                  <Text style={[styles.recoveryBannerTitle, {color: '#C05621', marginTop: 8}]}>
+                    {copyingListId === list.id ? 'Saving recovery copy…' : 'Create a new shared recovery copy'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))}
 
           {/* First-run recovery backup prompt — persists until explicitly
               acknowledged on RecoveryScreen; back/dismiss brings it back. */}

@@ -93,7 +93,8 @@ export const useListStore = create<ListState>((set, get) => ({
       updatedAt: now,
     };
 
-    // Create Yjs doc for the new list and set metadata
+    // Observe before the first transaction so empty lists are published and saved.
+    syncManager.registerList(id);
     const doc = getDoc(id);
     doc.transact(() => {
       const meta = doc.getMap('meta');
@@ -117,9 +118,6 @@ export const useListStore = create<ListState>((set, get) => ({
       const indexMap = indexDoc.getMap('listIds');
       indexMap.set(id, true);
     });
-
-    // Register for sync
-    syncManager.registerList(id);
 
     set((state) => ({
       lists: { ...state.lists, [newList.id]: newList },

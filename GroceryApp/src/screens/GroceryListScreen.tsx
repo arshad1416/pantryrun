@@ -969,7 +969,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
         </TouchableOpacity>
         <Text style={[styles.title, { color: theme.text }]}>{listName}</Text>
         <View style={styles.headerRight}>
-          <SyncIndicator />
+          <SyncIndicator listId={listId} />
           {/* Flyer scan requires BOTH the feature toggle and the AC-14 pricing
               opt-in — without the latter the registry returns no prices and a
               scan would appear to silently do nothing. */}

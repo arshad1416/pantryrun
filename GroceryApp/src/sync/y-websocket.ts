@@ -44,6 +44,8 @@ export interface WebSocketConfig {
    * When true, skips auth and sends identity directly.
    */
   allowUnauthenticated?: boolean;
+  /** Value-only lists must not publish reconstructed deltas or drain old queues. */
+  canSendList?: (listId: string) => boolean;
   /** Maximum reconnect delay in ms (default: 30s) */
   maxReconnectDelay?: number;
   /** Initial reconnect delay in ms (default: 1s) */
@@ -89,6 +91,14 @@ export const MAX_QUEUE_SIZE = 1000;
  */
 const ABYTES = 16;
 
+// Native libsodium has to_string but no from_string. Escape JSON to ASCII so
+// recovery control messages need no TextEncoder/polyfill/native-only API.
+function encodeRecoveryMessage(value: unknown): Uint8Array {
+  const json = JSON.stringify(value).replace(/[^\x20-\x7e]/g, character =>
+    `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  return Uint8Array.from(json, character => character.charCodeAt(0));
+}
+
 export class YjsWebSocketClient {
   private config: WebSocketConfig;
   private ws: WebSocket | null = null;
@@ -104,6 +114,10 @@ export class YjsWebSocketClient {
   private authPending = true; // true until auth_ack received
   /** Latched when the relay answers sync_request with "unknown message type". */
   private reconciliationUnsupported = false;
+  private storageOperations = new Set<Promise<unknown>>();
+  private initializing: Promise<void> | null = null;
+  private heldCount = 0;
+  private recoveryRequests = new Map<string, string>();
   private _ackTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Callbacks
@@ -127,23 +141,32 @@ export class YjsWebSocketClient {
    * to publish our own state vectors and find out what we missed.
    */
   onReconnected?: () => void;
+  onRecoveryRequest?: (listId: string, requestId: string, senderDeviceId: string) => void;
+  onRecoveryResponse?: (listId: string, update: Uint8Array) => void;
 
   constructor(config: WebSocketConfig) {
     this.config = config;
-    this.encryptKey = config.encryptionKey;
+    this.encryptKey = new Uint8Array(config.encryptionKey);
   }
 
   /**
    * Initialise libsodium and connect.
    */
-  async init(): Promise<void> {
+  init(): Promise<void> {
+    const initializing = this.initialize();
+    this.initializing = initializing;
+    return initializing;
+  }
+
+  private async initialize(): Promise<void> {
     await getSodium(); // triggers lazy import + sets module-level `sodium`
     await sodium.ready;
+    if (this.disposed) return;
     this.ready = true;
     // Restore updates that were queued offline in a previous process life —
     // without this, killing the app loses edits that never reached the relay.
     await this.restorePersistedQueue();
-    this.connect();
+    if (!this.disposed) this.connect();
   }
 
   /**
@@ -154,11 +177,31 @@ export class YjsWebSocketClient {
   private async restorePersistedQueue(): Promise<void> {
     try {
       const { loadQueueEntries, deleteQueueEntries } = await import('./offline-queue-store');
+      if (this.disposed) return;
       const persisted = await loadQueueEntries();
-      if (persisted.length === 0) return;
+      if (this.disposed || persisted.length === 0) return;
+      const { getDatabase } = await import('../storage/database');
+      if (this.disposed) return;
+      const db = getDatabase();
+      const heldIds = await db.localStorage.get<string[]>('yjs-held-queue-ids') ?? [];
+      if (this.disposed) return;
+      if (!Array.isArray(heldIds) || heldIds.some(id => typeof id !== 'string')) {
+        this.onError?.(new Error('Saved pending-change recovery index is unreadable; delivery paused.'));
+        return;
+      }
+      const held = new Set(heldIds);
+      for (const entry of persisted) {
+        if (this.config.canSendList?.(entry.listId) === false) held.add(entry.id);
+      }
+      // Persist the hold BEFORE any queue can drain. Adoption of a recovered
+      // list must never release old deltas with unknown dependencies later.
+      if (held.size !== heldIds.length) await db.localStorage.set('yjs-held-queue-ids', [...held]);
+      if (this.disposed) return;
+      this.heldCount = persisted.filter(entry => held.has(entry.id)).length;
 
       const undecryptable: string[] = [];
       for (const entry of persisted) {
+        if (held.has(entry.id)) continue;
         if (this.offlineQueue.length >= MAX_QUEUE_SIZE) break;
         try {
           const update = this.decryptUpdate(entry.payload, entry.listId);
@@ -187,6 +230,7 @@ export class YjsWebSocketClient {
       }
     } catch (err) {
       console.warn('YjsWebSocket: failed to restore persisted queue', err);
+      if (!this.disposed) this.onError?.(new Error('Saved pending changes could not be restored; their delivery is paused.'));
     }
   }
 
@@ -205,6 +249,7 @@ export class YjsWebSocketClient {
    * Connect (or reconnect) to the relay server.
    */
   connect(): void {
+    if (this.disposed) return;
     if (this.ws?.readyState === (typeof WebSocket !== 'undefined' ? WebSocket.OPEN : 1) ||
         this.ws?.readyState === (typeof WebSocket !== 'undefined' ? WebSocket.CONNECTING : 0)) {
       return;
@@ -212,8 +257,11 @@ export class YjsWebSocketClient {
 
     this.setState('connecting');
     this.ws = new WebSocket(this.config.url);
+    const socket = this.ws;
+    const current = () => !this.disposed && this.ws === socket;
 
     this.ws.onopen = () => {
+      if (!current()) return;
       this.reconnectAttempt = 0;
       // State stays 'connecting' until auth_ack received
       // (prevents sending updates before authentication)
@@ -254,6 +302,7 @@ export class YjsWebSocketClient {
     };
 
     this.ws.onmessage = async (event) => {
+      if (!current()) return;
       try {
         const data = JSON.parse(event.data as string) as RelayMessage;
         await this.handleMessage(data);
@@ -263,12 +312,14 @@ export class YjsWebSocketClient {
     };
 
     this.ws.onerror = (event) => {
+      if (!current()) return;
       console.warn('YjsWebSocket: connection error', event);
       this.setState('error');
       this.onError?.(new Error('WebSocket connection error'));
     };
 
     this.ws.onclose = () => {
+      if (!current()) return;
       this.setState('disconnected');
       this.scheduleReconnect();
     };
@@ -277,7 +328,7 @@ export class YjsWebSocketClient {
   /**
    * Disconnect and clean up.
    */
-  disconnect(): void {
+  async disconnect(): Promise<void> {
     this.disposed = true;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -294,6 +345,10 @@ export class YjsWebSocketClient {
       this.ws = null;
     }
     this.setState('disconnected');
+    this.recoveryRequests.clear();
+    await Promise.allSettled([this.initializing, ...this.storageOperations]);
+    // In-flight eviction cleanup can enqueue another storage operation.
+    while (this.storageOperations.size) await Promise.allSettled([...this.storageOperations]);
   }
 
   private scheduleReconnect(): void {
@@ -322,6 +377,7 @@ export class YjsWebSocketClient {
    * If offline, enqueue for later delivery.
    */
   sendUpdate(listId: string, update: Uint8Array): void {
+    if (this.disposed || this.config.canSendList?.(listId) === false) return;
     if (!this.ready) {
       console.warn('YjsWebSocket: libsodium not ready, enqueueing');
       this.enqueueOffline(update, listId);
@@ -404,7 +460,7 @@ export class YjsWebSocketClient {
     const delivered: Array<string | null | undefined> = [];
 
     for (const entry of queue) {
-      if (this.state === 'connected' && this.ws) {
+      if (this.state === 'connected' && this.ws && this.config.canSendList?.(entry.listId) !== false) {
         try {
           const encrypted = this.encryptUpdate(entry.update, entry.listId);
           this.sendMessage({
@@ -436,6 +492,7 @@ export class YjsWebSocketClient {
   // ─── Receiving Updates ─────────────────────────────────────────────────
 
   private async handleMessage(data: RelayMessage): Promise<void> {
+    if (this.disposed) return;
     switch (data.type) {
       case 'auth_ack': {
         // Authentication successful — clear timeout, send identity, flush queue
@@ -470,6 +527,21 @@ export class YjsWebSocketClient {
           }
           this.noteDecryptOk(data.listId);
           this.onSyncRequest?.(data.listId, stateVector, data.deviceId ?? '');
+        }
+        break;
+      }
+      case 'recovery_request':
+      case 'recovery_response': {
+        if (!data.listId || !data.payload) break;
+        let value: any;
+        try { value = JSON.parse(sodium.to_string(this.decryptUpdate(data.payload, data.listId))); }
+        catch (err) { this.reportDecryptFailure(data.listId, err); break; }
+        if (typeof value?.requestId !== 'string' || value.listId !== data.listId || value.senderDeviceId !== data.deviceId) break;
+        if (data.type === 'recovery_request' && value.kind === 'crdt-recovery-request') {
+          this.onRecoveryRequest?.(data.listId, value.requestId, value.senderDeviceId);
+        } else if (value.kind === 'complete-crdt-recovery' && value.targetDeviceId === this.config.deviceId && this.recoveryRequests.get(data.listId) === value.requestId) {
+          if (!Array.isArray(value.update) || value.update.some((byte: unknown) => !Number.isInteger(byte) || (byte as number) < 0 || (byte as number) > 255)) break;
+          this.onRecoveryResponse?.(data.listId, new Uint8Array(value.update));
         }
         break;
       }
@@ -517,7 +589,7 @@ export class YjsWebSocketClient {
         // reconnect. Latch it so we ask once per process instead of once per
         // list per reconnect. Reconciliation simply does not happen until the
         // relay is upgraded; everything else on the connection is unaffected.
-        if (/Unknown message type:\s*sync_request/i.test(message)) {
+        if (/Unknown message type:\s*(sync_request|recovery_request|recovery_response)/i.test(message)) {
           if (!this.reconciliationUnsupported) {
             this.reconciliationUnsupported = true;
             console.warn('YjsWebSocket: relay does not support reconciliation yet — disabled');
@@ -547,7 +619,8 @@ export class YjsWebSocketClient {
     // making sendUpdate async throughout the codebase.
     const nonce = sodium.randombytes_buf(sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
     // Use listId as AAD to bind ciphertext to a specific list
-    const additionalData = new TextEncoder().encode(listId);
+    // The native binding accepts string AAD; libsodium encodes it as UTF-8.
+    const additionalData = listId;
     const cipherWithTag = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
       update,
       additionalData,
@@ -619,7 +692,7 @@ export class YjsWebSocketClient {
     cipherWithTag.set(ciphertext);
     cipherWithTag.set(tag, ciphertext.length);
 
-    const additionalData = new TextEncoder().encode(listId);
+    const additionalData = listId;
 
     return sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
       null,
@@ -670,7 +743,7 @@ export class YjsWebSocketClient {
     }
     try {
       const encrypted = this.encryptUpdate(entry.update, entry.listId);
-      import('./offline-queue-store')
+      const saving = import('./offline-queue-store')
         .then(({ saveQueueEntry }) => saveQueueEntry(entry.listId, encrypted, entry.timestamp))
         .then((id) => {
           // Evicted while the write was in flight — delete rather than track,
@@ -684,6 +757,7 @@ export class YjsWebSocketClient {
           if (!id) this.reportPersistFailure(entry.listId, new Error('write returned no row id'));
         })
         .catch((err) => this.reportPersistFailure(entry.listId, err));
+      this.trackStorage(saving);
     } catch (err) {
       this.reportPersistFailure(entry.listId, err);
     }
@@ -699,9 +773,29 @@ export class YjsWebSocketClient {
 
   /** Best-effort removal of delivered/dropped entries from disk. */
   private deletePersisted(ids: Array<string | null | undefined>): void {
-    import('./offline-queue-store')
+    this.trackStorage(import('./offline-queue-store')
       .then(({ deleteQueueEntries }) => deleteQueueEntries(ids))
-      .catch(() => {});
+      .catch(() => {}));
+  }
+
+  private trackStorage(operation: Promise<unknown>): void {
+    this.storageOperations.add(operation);
+    operation.then(() => this.storageOperations.delete(operation), () => this.storageOperations.delete(operation));
+  }
+
+  /** One authenticated complete peer snapshot, correlated to this session. */
+  requestRecovery(listId: string): void {
+    if (!this.ready || this.disposed || this.state !== 'connected') return;
+    const requestId = sodium.to_base64(sodium.randombytes_buf(16), sodium.base64_variants.ORIGINAL);
+    this.recoveryRequests.set(listId, requestId);
+    this.sendMessage({ type: 'recovery_request', familyId: this.config.familyId, deviceId: this.config.deviceId, listId,
+      payload: this.encryptUpdate(encodeRecoveryMessage({ kind: 'crdt-recovery-request', listId, requestId, senderDeviceId: this.config.deviceId }), listId), });
+  }
+
+  sendRecoveryState(listId: string, requestId: string, targetDeviceId: string, update: Uint8Array): void {
+    if (!this.ready || this.disposed || this.state !== 'connected') return;
+    this.sendMessage({ type: 'recovery_response', familyId: this.config.familyId, deviceId: this.config.deviceId, listId,
+      payload: this.encryptUpdate(encodeRecoveryMessage({ kind: 'complete-crdt-recovery', listId, requestId, senderDeviceId: this.config.deviceId, targetDeviceId, update: Array.from(update) }), listId), });
   }
 
   private sendMessage(msg: RelayMessage): void {
@@ -721,14 +815,14 @@ export class YjsWebSocketClient {
    * Get the number of pending offline updates.
    */
   getPendingCount(): number {
-    return this.offlineQueue.length;
+    return this.offlineQueue.length + this.heldCount;
   }
 }
 
 // ─── Relay Message Types ─────────────────────────────────────────────────────
 
 interface RelayMessage {
-  type: 'auth' | 'auth_ack' | 'identity' | 'update' | 'ack' | 'error' | 'notification' | 'sync_request';
+  type: 'auth' | 'auth_ack' | 'identity' | 'update' | 'ack' | 'error' | 'notification' | 'sync_request' | 'recovery_request' | 'recovery_response';
   familyId?: string;
   deviceId?: string;
   listId?: string;

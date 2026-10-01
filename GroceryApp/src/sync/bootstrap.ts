@@ -55,7 +55,8 @@ async function provisionFirstRun(): Promise<Uint8Array | null> {
  *
  * @returns 'no-key' | 'local-only' | 'connected' — for logging/tests.
  */
-export async function bootstrapSync(): Promise<'no-key' | 'local-only' | 'connected'> {
+export async function bootstrapSync(): Promise<'no-key' | 'local-only' | 'connected' | 'cancelled'> {
+  const beforeHydration = syncManager.getSessionGeneration();
   const { getMasterKey } = await import('../crypto');
   const { useSyncStore } = await import('../state/useSyncStore');
   let masterKey = await getMasterKey();
@@ -71,7 +72,10 @@ export async function bootstrapSync(): Promise<'no-key' | 'local-only' | 'connec
   }
 
   // 1. Restore persisted lists/items into Yjs so the UI sees them.
+  if (syncManager.getSessionGeneration() !== beforeHydration) return 'cancelled';
   await syncManager.hydrateFromDB(masterKey);
+  const session = beforeHydration + 1;
+  if (syncManager.getSessionGeneration() !== session) return 'cancelled';
 
   // 2. Connect the relay if this device is enrolled in a family.
   const { getRelayToken, getRelayUrl } = await import('../identity/enroll');
@@ -84,6 +88,7 @@ export async function bootstrapSync(): Promise<'no-key' | 'local-only' | 'connec
     getRelayUrl(),
     getFamilyId(),
   ]);
+  if (syncManager.getSessionGeneration() !== session) return 'cancelled';
   const deviceId = getDeviceId();
 
   const settings = getSettings();
@@ -115,6 +120,7 @@ export async function bootstrapSync(): Promise<'no-key' | 'local-only' | 'connec
   }
 
   const { useGroceryStore } = await import('../state/useGroceryStore');
+  const { useListStore } = await import('../state/useListStore');
 
   await syncManager.init(
     {
@@ -139,6 +145,8 @@ export async function bootstrapSync(): Promise<'no-key' | 'local-only' | 'connec
         useSyncStore.getState().noteDecryptOk(listId);
       },
       onRemoteItemsUpdate: (listId, items) => {
+        // Refresh discovery and metadata as well as an already-open list.
+        useListStore.getState().loadLists().catch(() => {});
         // Refresh the visible list when a family member's update arrives.
         const grocery = useGroceryStore.getState();
         if (grocery.activeListId === listId) {
@@ -148,7 +156,8 @@ export async function bootstrapSync(): Promise<'no-key' | 'local-only' | 'connec
         }
       },
     },
+    session,
   );
 
-  return 'connected';
+  return syncManager.getSessionGeneration() === session ? 'connected' : 'cancelled';
 }
