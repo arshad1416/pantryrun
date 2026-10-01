@@ -7,10 +7,9 @@
  *   - every in-memory Yjs document,
  *   - the settings store,
  *   - every addressable groceryapp.* secure-store entry,
- * and — because expo-secure-store cannot enumerate keys — it must destroy
- * groceryapp.master_key and the device keypair so that any UNADDRESSABLE
- * residue (recovery/passkey entries for forgotten families/devices) is
- * cryptographic garbage. That limitation is disclosed in privacy/index.html.
+ * and delete groceryapp.master_key and the device keypair. SecureStore cannot
+ * enumerate forgotten recovery/passkey entries; wiping known keys does not
+ * guarantee forgotten entries or other family/relay copies become unreadable.
  *
  * UI wiring (confirmation dialog wording, destructive action) is pinned by
  * source scan in the suite's established idiom (no RN renderer here).
@@ -50,7 +49,7 @@ const FIXED_KEYS = [
 
 // Prefix-keyed entries belonging to a family this device has "forgotten" —
 // unreachable by any name-based wipe. They must SURVIVE (we cannot address
-// them) while the keys that could ever decrypt them are destroyed.
+// them). Removing current keys does not prove those entries are unusable.
 const FOREIGN_KEYS = [
   'groceryapp.recovery.seed.zombie-family-id',
   'groceryapp.recovery.phrase.zombie-family-id',
@@ -134,14 +133,14 @@ describe('deleteAllLocalData()', () => {
     expect(await SecureStore.getItemAsync(`groceryapp.passkey.credential.${deviceId}`)).toBeNull();
   });
 
-  it('cannot reach forgotten-family residue, but has destroyed every key that could use it', async () => {
+  it('leaves forgotten-family entries while deleting the current master and device keys', async () => {
     // The honest limitation: these survive because secure storage cannot
     // enumerate keys…
     for (const key of FOREIGN_KEYS) {
       expect(await SecureStore.getItemAsync(key)).toBe('unreachable-residue');
     }
-    // …and the guarantee that makes that acceptable: the master key and the
-    // device keypair are gone, so the residue is undecryptable garbage.
+    // The current master key and device identity are gone. These assertions
+    // do not establish that forgotten recovery or passkey material is unusable.
     expect(await SecureStore.getItemAsync('groceryapp.master_key')).toBeNull();
     expect(await SecureStore.getItemAsync('groceryapp.device.secret_key')).toBeNull();
     expect(await getMasterKey()).toBeNull();
@@ -163,6 +162,40 @@ describe('deleteAllLocalData()', () => {
 });
 
 describe('Delete All Data — UI wiring and policy text (source scan)', () => {
+  it('does not promise key destruction when a wipe stage failed', () => {
+    const src = read('src/screens/SettingsScreen.tsx');
+    expect(src).not.toContain('Your encryption keys were destroyed, but');
+    expect(src).toContain('Some local data or encryption keys may remain');
+  });
+
+  it('does not claim successful erasure when cleanup helpers can swallow errors', () => {
+    const src = read('src/screens/SettingsScreen.tsx');
+    const html = read('privacy/index.html');
+    const privacyScreen = read('src/screens/PrivacyScreen.tsx');
+    expect(privacyScreen).not.toContain('(or uninstall the app)');
+    expect(privacyScreen).toContain('Some secure-storage entries may remain after deletion or uninstalling');
+    expect(privacyScreen).toContain('Copies on other family devices or your relay are not erased');
+    expect(src).not.toContain('Permanently erase everything');
+    expect(src).not.toContain("'All Data Deleted'");
+    expect(src).toContain("'Local Deletion Finished'");
+    expect(src).toContain('Some secure-storage cleanup failures may not be reported');
+    expect(html).not.toContain('the app reports the failed steps');
+    expect(html).toContain('completion is not a guarantee that every key was erased');
+    expect(html).toContain('Some secure-storage cleanup failures may not be reported');
+  });
+
+  it('does not promise erasure of family or relay copies', () => {
+    const src = read('src/screens/SettingsScreen.tsx');
+    expect(src).not.toContain('can never be decrypted again');
+    expect(src).toContain('does not erase copies on other family devices or your relay');
+  });
+
+  it('links to the privacy and terms pages used by the store', () => {
+    const src = read('src/screens/PrivacyScreen.tsx');
+    expect(src).toContain("const PRIVACY_URL = 'https://www.pantryrun.app/privacy'");
+    expect(src).toContain("const TERMS_URL = 'https://www.pantryrun.app/terms'");
+  });
+
   it('SettingsScreen has a confirmed destructive Delete All Data action calling dataWipe', () => {
     const src = read('src/screens/SettingsScreen.tsx');
     expect(src).toContain("import('../services/dataWipe')");
@@ -175,10 +208,12 @@ describe('Delete All Data — UI wiring and policy text (source scan)', () => {
     expect(src).toContain("style: 'destructive'");
   });
 
-  it('privacy policy documents the wipe and the undecryptable-residue guarantee', () => {
+  it('privacy policy documents the wipe and forgotten-key limitation', () => {
     const html = read('privacy/index.html');
     expect(html).toContain('Delete All Data');
     expect(html).toContain('undecryptable');
     expect(html).toMatch(/cannot enumerate/i);
+    expect(html).toContain('cannot guarantee');
+    expect(html).toContain('This does not erase copies on other family devices or your relay');
   });
 });

@@ -1004,7 +1004,7 @@ export default function SettingsScreen({ navigation }: Props) {
       <View style={[styles.section, { backgroundColor: theme.cardBg, borderColor: '#f44336' }]}>
         <Text style={[styles.sectionTitle, { color: '#f44336' }]}>Danger Zone</Text>
         <Text style={[styles.sectionDescription, { color: theme.secondaryText }]}>
-          Permanently erase everything PantryRun stores on this device: your lists, settings, encryption keys, and device identity.
+          Attempt to delete local lists, settings, encryption keys, and device identity this install can address. Some secure-storage entries may remain.
         </Text>
         <TouchableOpacity
           style={[styles.clearPricesBtn, { borderColor: '#f44336', backgroundColor: '#f44336' }]}
@@ -1013,7 +1013,7 @@ export default function SettingsScreen({ navigation }: Props) {
           onPress={() => {
             Alert.alert(
               'Delete All Data?',
-              'This permanently erases all grocery lists, settings, and encryption keys on this device. Without your 12-word recovery phrase (or another family device), this data is UNRECOVERABLE — there is no account and no server-side reset. Encrypted copies on your relay expire automatically within 30 days and can never be decrypted again.',
+              'This attempts to delete local grocery lists, settings, and encryption keys this install can address. Without your 12-word recovery phrase (or another family device), deleted data is UNRECOVERABLE — there is no account and no server-side reset. This does not erase copies on other family devices or your relay. Forgotten recovery or passkey entries may remain in secure storage.',
               [
                 { text: 'Cancel', style: 'cancel' },
                 {
@@ -1026,13 +1026,13 @@ export default function SettingsScreen({ navigation }: Props) {
                       const failed = Object.keys(result.errors);
                       if (failed.length === 0) {
                         Alert.alert(
-                          'All Data Deleted',
-                          'Everything stored on this device has been erased. Restart the app to start fresh.',
+                          'Local Deletion Finished',
+                          'The app finished its local deletion steps. Some secure-storage cleanup failures may not be reported, and forgotten recovery or passkey entries may remain. Copies on other family devices or your relay were not erased. Restart the app to start fresh.',
                         );
                       } else {
                         Alert.alert(
                           'Deleted With Warnings',
-                          `Your encryption keys were destroyed, but these steps reported errors: ${failed.join(', ')}. Uninstalling the app removes anything left over.`,
+                          `Some local data or encryption keys may remain because these steps failed: ${failed.join(', ')}. Restart the app and retry deletion. Copies on other family devices or your relay were not erased.`,
                         );
                       }
                     } catch (err) {

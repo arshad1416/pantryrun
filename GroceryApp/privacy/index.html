@@ -144,16 +144,16 @@
       operate or any third party that keeps it. The data the app handles, and where
       it lives:</p>
       <ul>
-        <li><strong>Grocery list data</strong> — item names, quantities, categories, notes. Stored locally in an encrypted database on your device. When family sync is on, it travels to <em>your own relay server</em> only as end-to-end-encrypted ciphertext.</li>
+        <li><strong>Grocery list data</strong> — sensitive text fields such as item names, notes, and list names are encrypted locally. Quantities, categories, identifiers, and timestamps remain readable in the local database; notification history may contain readable names. The database file relies on your device's storage protection. When family sync is on, list content travels to <em>your own relay server</em> as end-to-end-encrypted ciphertext.</li>
         <li><strong>Device pairing key</strong> — a randomly generated public key used for family pairing. It is sent only to <em>your own relay server</em> during enrollment. Not linked to your identity; not a hardware or advertising ID.</li>
         <li><strong>Family member display names</strong> — names you choose for yourself within the app. Encrypted at rest, synced only as ciphertext.</li>
-        <li><strong>Barcode numbers</strong> — only if you turn on the optional barcode lookup, the scanned barcode digits (and nothing else) are sent to the Open Food Facts public database to fetch the product's name. See <a href="#optional-features">Optional Features</a>.</li>
+        <li><strong>Barcode numbers</strong> — only if you turn on optional barcode lookup, scanned barcode digits are sent to the Open Food Facts public database to fetch the product's name. The service also sees the network IP address used for the request. See <a href="#optional-features">Optional Features</a>.</li>
       </ul>
       <p>We do <strong>not</strong> collect: your real name, email address, phone number, location, contacts, advertising identifiers, analytics events, crash reports, or any browsing history.</p>
 
       <h2 id="how-data-is-stored">3. How Your Data Is Stored</h2>
       <ul>
-        <li><strong>On-device:</strong> All grocery data lives in a WatermelonDB database, encrypted with XChaCha20-Poly1305. Sensitive keys (encryption keys, pairing codes, your recovery material) are stored in your device's secure storage via <code>expo-secure-store</code>.</li>
+        <li><strong>On-device:</strong> Grocery data lives in a WatermelonDB database with sensitive text fields encrypted using XChaCha20-Poly1305; the whole database is not encrypted by the app. Sensitive keys (encryption keys, pairing codes, your recovery material) are stored in your device's secure credential storage via <code>expo-secure-store</code>.</li>
         <li><strong>In transit:</strong> Family sync uses WebSocket connections to your relay. Sync payloads are end-to-end encrypted — the relay forwards and briefly stores opaque ciphertext it cannot read.</li>
         <li><strong>On your relay:</strong> Your self-hosted relay <em>does</em> store data so that offline devices can catch up: encrypted list updates (automatically deleted after 30 days), device enrollment records (which expire 30 days after a device's last connection), and — if you use flyer scanning — nothing: flyer images are processed in memory and discarded. Everything retained is either ciphertext or a random public key. Because you run the relay, this data never leaves infrastructure you control.</li>
         <li><strong>Your keys, your data:</strong> Encryption keys exist only on your devices and in your 12-word recovery phrase. There is no server-side reset. <strong>If you lose all of your family's devices and the recovery phrase, your data is permanently unrecoverable</strong> — by design.</li>
@@ -241,16 +241,16 @@
       <h2 id="your-rights">7. Your Rights &amp; Data Deletion</h2>
       <p>Because PantryRun has no accounts and stores your data locally:</p>
       <ul>
-        <li><strong>To delete all your data:</strong> Use <strong>Settings → Delete All Data</strong> in the app. This wipes the local grocery database, your settings, and every key the app stored — including the master encryption key and your device keypair — after a confirmation warning. Uninstalling the app also removes all local data.</li>
+        <li><strong>To delete local data:</strong> Use <strong>Settings → Delete All Data</strong> in the app. After confirmation, the app attempts to erase the local grocery database, settings, and keys this install can address, including the master encryption key and device keypair. If a step fails, some data or keys may remain; the app reports errors it receives so you can retry. Some secure-storage cleanup failures may not be reported; completion is not a guarantee that every key was erased. This does not erase copies on other family devices or your relay. Uninstalling is not a guarantee that secure-storage entries are erased on every platform.</li>
         <li><strong>To clear only price data:</strong> Use the "Clear Local Prices" button in Settings.</li>
         <li><strong>To leave a family:</strong> Unpair your device in Settings. Copies of your family's <em>encrypted</em> updates may remain on your own relay server for up to 30 days, after which the relay deletes them automatically; you can also delete them immediately since you administer the relay. They are ciphertext throughout.</li>
-        <li><strong>About unreachable copies:</strong> Secure device storage cannot enumerate every stored key, so entries for families this device has long forgotten could in principle survive a wipe — but Delete All Data destroys the master key and device keypair first, so any such residue (and any encrypted blobs still ageing out on a relay) is undecryptable garbage that no one, including us, can ever read.</li>
+        <li><strong>About unreachable copies:</strong> Secure device storage cannot enumerate every stored key, so recovery or passkey entries for forgotten identities may survive a wipe. The app attempts to delete known keys, but cannot guarantee that every forgotten entry becomes undecryptable. Relay ciphertext is not erased by local deletion and may remain readable to other family devices or anyone holding the recovery phrase. Your relay administrator must erase relay copies separately if immediate deletion is needed.</li>
         <li><strong>To export your data:</strong> Your grocery data is in a local SQLite database. We plan to add a CSV export feature in a future update.</li>
       </ul>
       <p>
         There is no server-side copy of your data for us to delete: this version of
         the app talks only to the relay server you host yourself. Questions about
-        any of this: <a href="mailto:privacy@groceryapp.app">privacy@groceryapp.app</a>.
+        any of this: <a href="mailto:privacy@pantryrun.app">privacy@pantryrun.app</a>.
       </p>
 
       <h2 id="children">8. Children's Privacy</h2>
@@ -271,7 +271,7 @@
       <h2 id="contact">10. Contact</h2>
       <p>
         Questions about this privacy policy?<br />
-        Email: <a href="mailto:privacy@groceryapp.app">privacy@groceryapp.app</a><br />
+        Email: <a href="mailto:privacy@pantryrun.app">privacy@pantryrun.app</a><br />
         Website: <a href="https://groceryapp.app">groceryapp.app</a>
       </p>
     </div>
@@ -404,7 +404,7 @@
       <p>
         <a href="#quick-summary">Privacy Policy</a> &middot;
         <a href="#terms">Terms of Service</a> &middot;
-        <a href="mailto:privacy@groceryapp.app">Contact</a>
+        <a href="mailto:privacy@pantryrun.app">Contact</a>
       </p>
     </div>
 
