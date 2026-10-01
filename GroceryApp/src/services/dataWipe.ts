@@ -31,8 +31,9 @@
  * become unreadable.
  *
  * The wipe is deliberately best-effort per stage: a failure in one stage is
- * recorded and the remaining stages still run, so a single broken subsystem
- * cannot block key destruction.
+ * recorded when a helper propagates its error, and the remaining stages still
+ * run. Some cleanup helpers swallow errors, so completion does not guarantee
+ * that every addressable key was erased.
  */
 
 import { syncManager } from '../sync/sync-manager';
@@ -78,7 +79,7 @@ export async function deleteAllLocalData(): Promise<WipeResult> {
     syncManager.disconnect();
   }, result);
 
-  // 2. Keys first — even if a later stage fails, residue is already garbage.
+  // 2. Attempt known-key cleanup before clearing the identities used to locate it.
   //    clearRecoveryPhrase() and clearPasskeyData() must run BEFORE membership
   //    and device identity are cleared: they resolve their prefixed key names
   //    from the current familyId / deviceId.

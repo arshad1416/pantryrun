@@ -279,7 +279,7 @@ export default function PrivacyScreen({ navigation }: Props) {
         </Text>
         <View style={styles.bulletList}>
           <Text style={[styles.bulletItem, { color: theme.secondaryText }]}>
-            • <Text style={{ fontWeight: '600', color: theme.text }}>Delete all data:</Text> Settings → Delete All Data (or uninstall the app)
+            • <Text style={{ fontWeight: '600', color: theme.text }}>Delete local data:</Text> Settings → Delete All Data. Some secure-storage entries may remain after deletion or uninstalling. Copies on other family devices or your relay are not erased.
           </Text>
           <Text style={[styles.bulletItem, { color: theme.secondaryText }]}>
             • <Text style={{ fontWeight: '600', color: theme.text }}>Clear price data:</Text> Settings → Pricing → Clear Local Prices
