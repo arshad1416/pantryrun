@@ -19,6 +19,16 @@
       "ios": {
         "resourceClass": "m-medium"
       }
+    },
+    "ios-validation": {
+      "extends": "production",
+      "autoIncrement": false,
+      "distribution": "internal",
+      "ios": {
+        "image": "macos-tahoe-26.4-xcode-26.4",
+        "resourceClass": "m-medium",
+        "simulator": true
+      }
     }
   },
   "submit": {
