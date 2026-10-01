@@ -10,8 +10,9 @@
  */
 
 import * as Y from 'yjs';
+import { holdRecoveryCopyQueue, prepareRecoveryCopy, markRecoveryCopyReady, loadRecoveryCopyOperation, repairRecoveryCopyOutbox, type RecoveryCopyOperation } from './recovery-copy-store';
 import { getDatabase } from '../storage/database';
-import { encrypt, decrypt } from '../crypto';
+import { encrypt, decrypt, encryptionKeyFingerprint } from '../crypto';
 import { YjsWebSocketClient, type WebSocketConfig, type ConnectionState } from './y-websocket';
 import {
   getDoc,
@@ -35,6 +36,16 @@ import type { EncryptedData } from '../types';
 // discoverable even if the first materialized list row never reaches disk.
 // One queue across lists/managers also serializes registry read/modify/write.
 const SNAPSHOT_REGISTRY = 'yjs-state-list-ids';
+interface SnapshotRegistry { version: 1; listIds: string[]; legacyImported: boolean; }
+const emptyRegistry = (): SnapshotRegistry => ({ version: 1, listIds: [], legacyImported: false });
+function validateRegistry(value: unknown): SnapshotRegistry {
+  const registry = value as SnapshotRegistry;
+  if (!registry || registry.version !== 1 || !Array.isArray(registry.listIds) ||
+      registry.listIds.some(id => typeof id !== 'string') || typeof registry.legacyImported !== 'boolean') {
+    throw new Error('Invalid persisted Yjs registry');
+  }
+  return registry;
+}
 let persistenceQueue: Promise<void> = Promise.resolve();
 const equalBytes = (left: Uint8Array, right: Uint8Array) => left.length === right.length && left.every((byte, i) => byte === right[i]);
 
@@ -62,7 +73,8 @@ export class SyncManager {
   private observedDocs = new Map<string, () => void>(); // cleanup functions
   private encryptionKey: Uint8Array | null = null;
   private ready = false;
-  private isHydrating = false;
+  private copyTargets = new Set<string>();
+  private unpublishedCopyTargets = new Set<string>();
 
   /**
    * Initialise the sync manager.
@@ -84,7 +96,7 @@ export class SyncManager {
     this.encryptionKey = new Uint8Array(config.encryptionKey);
 
     this.wsClient = new YjsWebSocketClient({ ...config,
-      canSendList: (listId) => !this.recoveryPending.has(listId),
+      canSendList: (listId) => !this.recoveryPending.has(listId) && !this.unpublishedCopyTargets.has(listId),
     });
     const client = this.wsClient;
     const current = () => generation === this.generation && this.wsClient === client;
@@ -145,11 +157,8 @@ export class SyncManager {
       // Ignore updates we applied locally (origin is non-null for remote)
       if (origin === 'remote') return;
 
-      // Skip observer during hydration to prevent spurious DB writes
-      if (this.isHydrating) return;
-
       // Send update via WebSocket
-      if (this.wsClient && !this.recoveryPending.has(listId)) {
+      if (this.wsClient && !this.recoveryPending.has(listId) && !this.unpublishedCopyTargets.has(listId)) {
         this.wsClient.sendUpdate(listId, updates);
       }
 
@@ -236,7 +245,11 @@ export class SyncManager {
     for (const listId of getActiveDocIds()) {
       if (listId.startsWith('__')) continue;
       if (this.recoveryPending.has(listId)) this.wsClient.requestRecovery(listId);
-      else this.wsClient.sendStateVector(listId, Y.encodeStateVector(getDoc(listId)));
+      else if (!this.unpublishedCopyTargets.has(listId)) {
+        // Copies need discovery even if a peer has never seen their new ID.
+        if (this.copyTargets.has(listId)) this.wsClient.sendUpdate(listId, Y.encodeStateAsUpdate(getDoc(listId)));
+        this.wsClient.sendStateVector(listId, Y.encodeStateVector(getDoc(listId)));
+      }
     }
   }
 
@@ -252,7 +265,7 @@ export class SyncManager {
   private answerSyncRequest(listId: string, stateVector: Uint8Array): void {
     // Never answer for a list we do not already track — getDoc() would create
     // an empty document as a side effect and we would reply with nothing.
-    if (!this.wsClient || !getActiveDocIds().includes(listId) || this.recoveryPending.has(listId)) return;
+    if (!this.wsClient || !getActiveDocIds().includes(listId) || this.recoveryPending.has(listId) || this.unpublishedCopyTargets.has(listId)) return;
     try {
       const diff = Y.encodeStateAsUpdate(getDoc(listId), stateVector);
       this.wsClient.sendUpdate(listId, diff);
@@ -376,19 +389,80 @@ export class SyncManager {
     // all row projections finish together before a newer revision starts.
     const key = new Uint8Array(this.encryptionKey);
     const corrupt = this.corruptSnapshots.has(listId);
-    const write = persistenceQueue.catch(() => {}).then(async () => {
-      const db = getDatabase();
-      const context = `${corrupt ? 'yjs-local-recovery' : 'yjs-state'}:${listId}`;
-      const envelope = await encrypt(snapshot, key, context);
-      const registry = await db.localStorage.get<string[]>(SNAPSHOT_REGISTRY) ?? [];
-      if (!Array.isArray(registry) || registry.some(id => typeof id !== 'string')) {
-        throw new Error('Invalid persisted Yjs registry');
+    await this.enqueuePersistence(() => this.writeCapturedState(listId, list, items, snapshot, key, corrupt));
+  }
+
+  private async writeCapturedState(listId: string, list: GroceryList | null, items: GroceryItem[], snapshot: string, key: Uint8Array, corrupt = false): Promise<void> {
+    const db = getDatabase();
+    const scope = await encryptionKeyFingerprint(key);
+    const context = `${corrupt ? 'yjs-local-recovery' : 'yjs-state'}:${scope}:${listId}`;
+    const envelope = await encrypt(snapshot, key, context);
+    const registryKey = `${SNAPSHOT_REGISTRY}:${scope}`;
+    const saved = await db.localStorage.get<SnapshotRegistry>(registryKey);
+    const registry = saved ? validateRegistry(saved) : emptyRegistry();
+    if (!registry.listIds.includes(listId)) await db.localStorage.set(registryKey, { ...registry, listIds: [...registry.listIds, listId] });
+    await db.localStorage.set(context, envelope);
+    if (list) await persistList(list, key);
+    for (const item of items) await persistItem(item, key);
+  }
+
+  /** Explicitly preserve a paused list as a new, independently shared identity. */
+  async createSharedRecoveryCopy(listId: string): Promise<GroceryList> {
+    if (!this.encryptionKey || !this.recoveryPending.has(listId)) throw new Error('This list does not need a shared recovery copy');
+    const list = extractList(listId);
+    if (!list) throw new Error('Saved list is unavailable');
+    const key = new Uint8Array(this.encryptionKey);
+    const generation = this.generation;
+    const deviceId = this.config?.deviceId ?? 'local device';
+    const source = {list, items: extractItems(listId), update: Y.encodeStateAsUpdate(getDoc(listId)), capturedAt: Date.now()};
+    let operation!: RecoveryCopyOperation;
+    try {
+      await this.enqueuePersistence(async () => {
+        operation = await prepareRecoveryCopy(source, key, deviceId);
+        await this.savePreparedCopy(listId, operation, key);
+      });
+      if (generation !== this.generation) throw new Error('Recovery copy saved; session changed before publication');
+      if (this.recoveryPending.has(operation.list.id)) throw new Error('Current recovery copy history is unreadable; original data is retained');
+      if (!extractList(operation.list.id)) {
+        const scope = await encryptionKeyFingerprint(key);
+        const saved = await this.readSnapshot(operation.list.id, key, `yjs-state:${scope}:${operation.list.id}`);
+        if (generation !== this.generation) throw new Error('Recovery copy saved; session changed before publication');
+        if (!saved || saved.recoveryPending) throw new Error('Current recovery copy history is unavailable; original data is retained');
+        this.unregisterList(operation.list.id);
+        Y.applyUpdate(getDoc(operation.list.id), saved.update, 'remote');
       }
-      if (!registry.includes(listId)) await db.localStorage.set(SNAPSHOT_REGISTRY, [...registry, listId]);
-      await db.localStorage.set(context, envelope);
-      if (list) await persistList(list, key);
-      for (const item of items) await persistItem(item, key);
-    });
+      this.installCopy(operation);
+      this.wsClient?.sendUpdate(operation.list.id, Y.encodeStateAsUpdate(getDoc(operation.list.id)));
+      return extractList(operation.list.id)!;
+    } catch (err) {
+      if (generation === this.generation) this.reportPersistError('failed to persist shared recovery copy', err);
+      throw err;
+    }
+  }
+
+  private async savePreparedCopy(sourceId: string, operation: RecoveryCopyOperation, key: Uint8Array): Promise<void> {
+    await holdRecoveryCopyQueue(operation);
+    if (operation.phase === 'ready') return; // Never rewind a later edited/deleted copy.
+    await this.writeCapturedState(operation.list.id, operation.list, operation.items,
+      JSON.stringify({version: 1, update: operation.update, recoveryPending: false}), key);
+    await markRecoveryCopyReady(sourceId, operation.operationId, key);
+    operation.phase = 'ready';
+  }
+
+  private installCopy(operation: RecoveryCopyOperation): void {
+    const id = operation.list.id;
+    // Only a healthy latest snapshot can authorize a ready copy. Journal
+    // baseline is never a substitute for later edits or deletion.
+    if (!extractList(id) || this.recoveryPending.has(id) || getDoc(id).store.pendingStructs || getDoc(id).store.pendingDs) throw new Error('Current recovery copy history is unavailable');
+    this.copyTargets.add(id);
+    this.unpublishedCopyTargets.delete(id);
+    this.registerList(id);
+    getDoc('__lists_index__').getMap('listIds').set(id, true);
+    this.callbacks.onRemoteItemsUpdate?.(id, extractItems(id));
+  }
+
+  private async enqueuePersistence(operation: () => Promise<void>): Promise<void> {
+    const write = persistenceQueue.catch(() => {}).then(operation);
     persistenceQueue = write;
     this.pendingWrites.add(write);
     try { await write; } finally { this.pendingWrites.delete(write); }
@@ -449,7 +523,6 @@ export class SyncManager {
     const generation = this.generation;
     await stopped;
     if (generation !== this.generation) return;
-    this.isHydrating = true;
     this.encryptionKey = new Uint8Array(encryptionKey);
     destroyAllDocs();
     const clearing = import('../state/useSyncStore').then(({ useSyncStore }) => {
@@ -457,28 +530,68 @@ export class SyncManager {
     }).catch(() => {});
     await clearing;
     if (generation !== this.generation) return;
+    this.copyTargets.clear();
+    this.unpublishedCopyTargets.clear();
     this.recoveryPending.clear();
     this.corruptSnapshots.clear();
     this.recoveryDocs.forEach(doc => doc.destroy());
     this.recoveryDocs.clear();
     try {
-      const lists = await loadListsFromDB(encryptionKey);
+      const key = new Uint8Array(encryptionKey);
+      const scope = await encryptionKeyFingerprint(key);
       if (generation !== this.generation) return;
-      let registry: string[] = [];
+      const lists = await loadListsFromDB(key);
+      if (generation !== this.generation) return;
+      const registryKey = `${SNAPSHOT_REGISTRY}:${scope}`;
+      let scoped = emptyRegistry();
+      let scopedReadable = true;
       try {
-        const saved = await getDatabase().localStorage.get<string[]>(SNAPSHOT_REGISTRY) ?? [];
-        if (generation !== this.generation) return;
-        if (!Array.isArray(saved) || saved.some(id => typeof id !== 'string')) throw new Error('Invalid persisted Yjs registry');
-        registry = saved;
+        const saved = await getDatabase().localStorage.get<SnapshotRegistry>(registryKey);
+        if (saved) scoped = validateRegistry(saved);
       } catch (err) {
+        scopedReadable = false;
         if (generation !== this.generation) return;
         this.reportStorageRecoveryError('Saved list index is unreadable. Existing list data is retained; some saved lists may need recovery.', err);
-        // Preserve the unreadable original registry; row-backed lists can
-        // still load. No write may implicitly replace that registry.
       }
-      const ids = [...new Set([...lists.map(list => list.id), ...registry])];
-      const allItems = await loadItemsFromDB(encryptionKey, { listIds: ids });
+      let legacyIds: string[] = [];
+      let legacyReadable = true;
+      if (!scoped.legacyImported) {
+        try {
+          const saved = await getDatabase().localStorage.get<string[]>(SNAPSHOT_REGISTRY) ?? [];
+          if (!Array.isArray(saved) || saved.some(id => typeof id !== 'string')) throw new Error('Invalid legacy Yjs registry');
+          legacyIds = saved;
+        } catch (err) {
+          legacyReadable = false;
+          if (generation !== this.generation) return;
+          this.reportStorageRecoveryError('Saved list index is unreadable. Existing list data is retained; some saved lists may need recovery.', err);
+        }
+      }
       if (generation !== this.generation) return;
+      const scopedIds = new Set(scoped.listIds);
+      const ids = [...new Set([...lists.map(list => list.id), ...scoped.listIds, ...legacyIds])];
+      let imported = scopedReadable && legacyReadable;
+      const allItems = await loadItemsFromDB(key, { listIds: ids });
+      if (generation !== this.generation) return;
+      let copyOperations: Array<{sourceListId: string; operation: RecoveryCopyOperation}> = [];
+      try {
+        await this.enqueuePersistence(async () => {
+          const report = (err: unknown) => { if (generation === this.generation) this.reportStorageRecoveryError('A saved recovery copy is unreadable. Original data is retained; other lists can continue sharing.', err); };
+          const entries = await repairRecoveryCopyOutbox(ids, key, report);
+          for (const entry of entries) {
+            try { copyOperations.push({sourceListId: entry.sourceListId, operation: await loadRecoveryCopyOperation(entry, key)}); }
+            catch (err) { this.unpublishedCopyTargets.add(entry.targetListId); report(err); }
+          }
+        });
+      } catch (err) {
+        if (generation !== this.generation) return;
+        this.reportStorageRecoveryError('Saved recovery copy needs attention. Its original data is retained; sharing may be paused.', err);
+      }
+      if (generation !== this.generation) return;
+      for (const {operation} of copyOperations) {
+        this.copyTargets.add(operation.list.id);
+        if (operation.phase === 'prepared') this.unpublishedCopyTargets.add(operation.list.id);
+        if (!ids.includes(operation.list.id)) ids.push(operation.list.id);
+      }
       const index = getDoc('__lists_index__').getMap('listIds');
       index.clear();
       for (const listId of ids) {
@@ -486,15 +599,23 @@ export class SyncManager {
         const list = lists.find(value => value.id === listId);
         const items = allItems.filter(item => item.listId === listId);
         let snapshot: Awaited<ReturnType<SyncManager['readSnapshot']>> = null;
+        let scopedSnapshot = false;
         try {
-          snapshot = await this.readSnapshot(listId, encryptionKey, `yjs-state:${listId}`);
+          snapshot = await this.readSnapshot(listId, key, `yjs-state:${scope}:${listId}`);
+          scopedSnapshot = snapshot !== null;
+          if (!snapshot) snapshot = await this.readSnapshot(listId, key, `yjs-state:${listId}`);
         } catch (err) {
           if (generation !== this.generation) return;
           if (!list) {
             // A global legacy registry can reference history encrypted under a
             // previous family key. Never quarantine that ID as a current-family
             // list or block incoming discovery; retain its envelope untouched.
-            this.reportStorageRecoveryError('Some saved history cannot be read with this key. Older device data is retained.', err);
+            if (scopedIds.has(listId)) {
+              imported = false;
+              this.reportStorageRecoveryError('Saved sync history is unreadable. The original data is retained for recovery.', err);
+            } else {
+              console.warn('SyncManager: retained legacy ciphertext belonging to another key or unavailable history', err);
+            }
             continue;
           }
           // Preserve the corrupt encrypted original for recovery. Local edits
@@ -502,7 +623,10 @@ export class SyncManager {
           this.corruptSnapshots.add(listId);
           this.recoveryPending.add(listId);
           this.reportPersistError(`failed to restore saved sync state for ${listId}`, err);
-          try { snapshot = await this.readSnapshot(listId, encryptionKey, `yjs-local-recovery:${listId}`); }
+          try {
+            snapshot = await this.readSnapshot(listId, key, `yjs-local-recovery:${scope}:${listId}`);
+            if (!snapshot) snapshot = await this.readSnapshot(listId, key, `yjs-local-recovery:${listId}`);
+          }
           catch (recoveryError) { if (generation === this.generation) this.reportPersistError('failed to restore local recovery edits', recoveryError); }
         }
         if (generation !== this.generation) return;
@@ -517,12 +641,45 @@ export class SyncManager {
           // Registry-first interrupted before snapshot commit: harmless entry.
           continue;
         }
-        if (extractList(listId)) index.set(listId, true);
+        if (extractList(listId) && !this.unpublishedCopyTargets.has(listId)) index.set(listId, true);
         this.registerList(listId);
+        if (!scopedSnapshot) {
+          try { await this.persistListToDB(listId); }
+          catch (err) { imported = false; this.reportPersistError('failed to persist imported sync history', err); }
+        }
+      }
+      for (const {sourceListId, operation} of copyOperations) {
+        if (generation !== this.generation) return;
+        try {
+          const wasReady = operation.phase === 'ready';
+          await this.enqueuePersistence(() => this.savePreparedCopy(sourceListId, operation, key));
+          if (generation !== this.generation) return;
+          // A partially saved prepared snapshot is the same lineage. Ready
+          // copies must restore their latest snapshot, never journal baseline.
+          if (wasReady && (!extractList(operation.list.id) || this.recoveryPending.has(operation.list.id))) {
+            throw new Error('Current recovery copy history is unreadable');
+          }
+          if (!wasReady) {
+            this.unregisterList(operation.list.id);
+            Y.applyUpdate(getDoc(operation.list.id), new Uint8Array(operation.update), 'remote');
+            this.recoveryPending.delete(operation.list.id);
+          }
+          this.installCopy(operation);
+        } catch (err) {
+          if (generation !== this.generation) return;
+          this.unpublishedCopyTargets.add(operation.list.id);
+          this.reportPersistError('failed to persist resumed recovery copy', err);
+        }
+      }
+      if (generation === this.generation && imported && !scoped.legacyImported) {
+        await this.enqueuePersistence(async () => {
+          const saved = await getDatabase().localStorage.get<SnapshotRegistry>(registryKey);
+          const registry = saved ? validateRegistry(saved) : emptyRegistry();
+          await getDatabase().localStorage.set(registryKey, { ...registry, legacyImported: true });
+        });
       }
     } finally {
       if (generation === this.generation) {
-        this.isHydrating = false;
         this.reportRecoveryPending();
       }
     }
@@ -563,14 +720,14 @@ export class SyncManager {
       const generation = this.generation;
       const key = new Uint8Array(this.encryptionKey);
       const localState = Y.encodeStateAsUpdate(currentDoc);
-      const backup = persistenceQueue.catch(() => {}).then(async () => {
-        const original = await getDatabase().localStorage.get<EncryptedData>(`yjs-state:${listId}`);
-        const envelope = await encrypt(JSON.stringify({ update: Array.from(localState), original }), key, `yjs-legacy-backup:${listId}`);
-        await getDatabase().localStorage.set(`yjs-legacy-backup:${listId}`, envelope);
+      await this.enqueuePersistence(async () => {
+        const scope = await encryptionKeyFingerprint(key);
+        const originalScoped = await getDatabase().localStorage.get<EncryptedData>(`yjs-state:${scope}:${listId}`);
+        const originalLegacy = await getDatabase().localStorage.get<EncryptedData>(`yjs-state:${listId}`);
+        const context = `yjs-legacy-backup:${scope}:${listId}`;
+        const envelope = await encrypt(JSON.stringify({ update: Array.from(localState), originalScoped, originalLegacy }), key, context);
+        await getDatabase().localStorage.set(context, envelope);
       });
-      persistenceQueue = backup;
-      this.pendingWrites.add(backup);
-      try { await backup; } finally { this.pendingWrites.delete(backup); }
       if (generation !== this.generation || !this.recoveryPending.has(listId) ||
         !equalBytes(localState, Y.encodeStateAsUpdate(getDoc(listId)))) return;
       this.unregisterList(listId);

@@ -160,3 +160,43 @@ it('does not quarantine old-key-only snapshots as current-family recovery failur
   hydrateList('new-key-list',list('new-key-list'),[]);await (m as any).persistListToDB('new-key-list');await m.hydrateFromDB(key);await settle();
   expect(extractList('old-key-list')?.name).toBe('old-key-list');expect(extractList('new-key-list')).toBeNull();
 });
+
+it('scopes snapshots by key so normal family changes show no storage-recovery warning', async () => {
+  const m=manager();await m.hydrateFromDB(key);hydrateList('scoped',list('scoped'),[]);await (m as any).persistListToDB('scoped');
+  await m.hydrateFromDB(keyB);await settle();const {useSyncStore}=await import('../src/state/useSyncStore');
+  expect(useSyncStore.getState().storageRecoveryError).toBeNull();
+  hydrateList('scoped',{...list('scoped'),name:'Different family with same application ID'},[]);await (m as any).persistListToDB('scoped');
+  await m.hydrateFromDB(key);expect(extractList('scoped')?.name).toBe('scoped');
+  await m.hydrateFromDB(keyB);expect(extractList('scoped')?.name).toBe('Different family with same application ID');
+});
+
+it('imports readable legacy snapshots losslessly while leaving old encrypted originals intact', async () => {
+  hydrateList('legacy-snapshot',list('legacy-snapshot'),[]);const envelope=await encrypt(JSON.stringify(Array.from(Y.encodeStateAsUpdate(getDoc('legacy-snapshot')))),key,'yjs-state:legacy-snapshot');destroyAllDocs();
+  await getDatabase().localStorage.set('yjs-state:legacy-snapshot',envelope);await getDatabase().localStorage.set('yjs-state-list-ids',['legacy-snapshot']);
+  const m=manager();await m.hydrateFromDB(key);expect(extractList('legacy-snapshot')?.name).toBe('legacy-snapshot');
+  expect(await getDatabase().localStorage.get('yjs-state:legacy-snapshot')).toEqual(envelope);
+  expect(await getDatabase().localStorage.get('yjs-state:c90d1cd40ae34ef919aa7640d08ed0cd:legacy-snapshot')).toBeDefined();
+  expect(await getDatabase().localStorage.get('yjs-state-list-ids')).toEqual(['legacy-snapshot']);
+});
+
+it('reports corruption of a current-key scoped orphan without hiding healthy lists', async () => {
+  const m=manager();await m.hydrateFromDB(key);hydrateList('bad-orphan',list('bad-orphan'),[]);await (m as any).persistListToDB('bad-orphan');
+  const context='yjs-state:c90d1cd40ae34ef919aa7640d08ed0cd:bad-orphan';await getDatabase().localStorage.set(context,await encrypt('[999]',key,context));
+  const { _getTable }=require('@nozbe/watermelondb');_getTable('grocery_lists').clear();await storage.persistList(list('still-healthy'),key);
+  await m.hydrateFromDB(key);await settle();const {useSyncStore}=await import('../src/state/useSyncStore');
+  expect(extractList('still-healthy')?.name).toBe('still-healthy');expect(useSyncStore.getState().storageRecoveryError).toContain('history');
+});
+
+it('a failed local save remains visible when wire decrypt and legacy recovery are also failing', async () => {
+  const {syncIndicatorStatus}=await import('../src/state/useSyncStore');
+  const result=syncIndicatorStatus({syncState:'idle',error:null,undecryptableLists:['other'],recoveryPendingLists:['legacy'],persistenceError:"Couldn't save recent changes to this device",storageRecoveryError:'History unavailable'});
+  expect(result.label).toBe("Couldn't save recent changes to this device");
+});
+
+it('persists edits to a restored list while another list is still being imported', async () => {
+  await storage.persistList(list('first-restored'),key);await storage.persistList(list('second-restored'),key);
+  const entered=deferred(),gate=deferred(),real=storage.persistList;
+  jest.spyOn(storage,'persistList').mockImplementation(async (value,capturedKey)=>{if(value.id==='second-restored'){entered.release();await gate.promise;}return real(value,capturedKey);});
+  const m=manager();const hydrating=m.hydrateFromDB(key);await entered.promise;yjsUpdateListMeta('first-restored',{name:'Edited during other import'});gate.release();await hydrating;await m.disconnect();destroyAllDocs();
+  const restarted=manager();await restarted.hydrateFromDB(key);expect(extractList('first-restored')?.name).toBe('Edited during other import');
+});

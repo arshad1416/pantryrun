@@ -443,6 +443,12 @@ export async function deriveSyncKey(
   );
 }
 
+/** A nonsecret stable namespace for local ciphertext owned by this key. */
+export async function encryptionKeyFingerprint(key: Uint8Array): Promise<string> {
+  await ensureReady();
+  return sodium.to_hex(sodium.crypto_generichash(16, key));
+}
+
 /**
  * Derive a sub-key for local database encryption from the master key.
  *

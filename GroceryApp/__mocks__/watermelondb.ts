@@ -149,6 +149,7 @@ class Collection {
 const localValues = new Map<string, any>();
 
 export class Database {
+  adapter = { getLocal: async (key: string) => localValues.has(key) ? JSON.stringify(localValues.get(key)) : undefined };
   localStorage = {
     get: async (key: string) => localValues.get(key),
     set: async (key: string, value: any) => { localValues.set(key, value); },

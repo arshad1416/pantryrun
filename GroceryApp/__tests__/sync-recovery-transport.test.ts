@@ -63,7 +63,7 @@ it('adopts only a complete equal original history and future deltas converge wit
   const reply={kind:'complete-crdt-recovery',listId:'legacy',senderDeviceId:'peer',targetDeviceId:'device',requestId:requestData.requestId,update:Array.from(originalBytes)};
   await (client as any).handleMessage({type:'recovery_response',listId:'legacy',deviceId:'peer',payload:(client as any).encryptUpdate(new Uint8Array(Buffer.from(JSON.stringify(reply))),'legacy')}); await settle();
   expect(Array.from(Y.encodeStateVector(getDoc('legacy')))).toEqual(Array.from(originalVector));
-  expect(await getDatabase().localStorage.get('yjs-legacy-backup:legacy')).toBeDefined();
+  expect(await getDatabase().localStorage.get('yjs-legacy-backup:626d3fc43b48b31801d5e96fb8ff0619:legacy')).toBeDefined();
   frames.length=0; yjsUpdateListMeta('legacy',{name:'Shared after recovery'}); await settle();
   const outgoing=frames.find(f => f.type==='update'); expect(outgoing).toBeDefined(); Y.applyUpdate(peer,(client as any).decryptUpdate(outgoing.payload,'legacy'));
   expect(peer.getMap('meta').get('name')).toBe('Shared after recovery'); expect(peer.getArray('items').length).toBe(1); peer.destroy();
@@ -85,7 +85,7 @@ it('asks for reconciliation after adoption so edits made during backup are not m
   await persistList(list,key);await persistItem(item,key);const m=new SyncManager();clients.push(m);await m.hydrateFromDB(key);await m.init(config);await settle();
   const client=m.getClient()!;const request=frames.find(f=>f.type==='recovery_request');const value=JSON.parse(Buffer.from((client as any).decryptUpdate(request.payload,'legacy')).toString());
   const gate=deferred(),entered=deferred(),real=getDatabase().localStorage.set.bind(getDatabase().localStorage);
-  jest.spyOn(getDatabase().localStorage,'set').mockImplementation(async (context:string,data:any)=>{if(context==='yjs-legacy-backup:legacy'){entered.release();await gate.promise;}return real(context,data);});
+  jest.spyOn(getDatabase().localStorage,'set').mockImplementation(async (context:string,data:any)=>{if(context==='yjs-legacy-backup:626d3fc43b48b31801d5e96fb8ff0619:legacy'){entered.release();await gate.promise;}return real(context,data);});
   const reply={kind:'complete-crdt-recovery',listId:'legacy',senderDeviceId:'peer',targetDeviceId:'device',requestId:value.requestId,update:Array.from(baseline)};
   await (client as any).handleMessage({type:'recovery_response',listId:'legacy',deviceId:'peer',payload:(client as any).encryptUpdate(new Uint8Array(Buffer.from(JSON.stringify(reply))),'legacy')});await entered.promise;
   const before=Y.encodeStateVector(peer);peer.getMap('meta').set('name','Peer edit during backup');(m as any).applyRemoteUpdate('legacy',Y.encodeStateAsUpdate(peer,before));gate.release();await settle();

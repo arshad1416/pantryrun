@@ -74,24 +74,29 @@ export function syncIndicatorStatus(s: {
   recoveryPendingLists?: readonly string[];
   persistenceError?: string | null;
   storageRecoveryError?: string | null;
+  activeListId?: string;
+  connectionState?: ConnectionState;
 }): { label: string; color: string } {
   // Checked FIRST, ahead of syncState. A device whose key does not match the
   // family's data is connected, online, and reporting 'idle' — every signal
   // the socket has says everything is fine, and none of them is about whether
   // the data can be read. Deferring to syncState here would render "Synced"
   // over a device that is discarding every message it receives.
+  if (s.persistenceError) return { label: s.persistenceError, color: '#f44336' };
   if (s.undecryptableLists.length > 0) {
     return { label: "Can't read family lists", color: '#f44336' };
   }
 
-  if (s.persistenceError) return { label: s.persistenceError, color: '#f44336' };
   if (s.storageRecoveryError) return { label: s.storageRecoveryError, color: '#f44336' };
-  if (s.recoveryPendingLists?.length) return { label: 'List recovery needed — sharing paused', color: '#f44336' };
+  if (s.recoveryPendingLists?.length && (!s.activeListId || s.recoveryPendingLists.includes(s.activeListId))) return { label: s.activeListId ? 'Saved on this device — sharing paused' : 'List recovery needed — sharing paused', color: '#f44336' };
 
   if (s.syncState === 'syncing') return { label: 'Syncing...', color: '#FF9800' };
   // In the error state, prefer the specific message set by whoever reported
   // it (e.g. "Couldn't save recent changes to this device" for a failed local
   // write) — a blanket "Sync error" misleads when the failure isn't sync.
+  if (s.activeListId && s.recoveryPendingLists?.length && s.error?.startsWith('Some saved lists need recovery.') && s.syncState === 'error') {
+    return s.connectionState === 'connected' ? {label: 'Connected', color: '#10B981'} : {label: 'Offline', color: '#999'};
+  }
   if (s.syncState === 'error') return { label: s.error || 'Sync error', color: '#f44336' };
   if (s.syncState === 'offline') return { label: 'Offline', color: '#999' };
   if (s.syncState === 'not_configured') return { label: 'Local only', color: '#999' };
