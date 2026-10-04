@@ -20,6 +20,7 @@ import type { PriceResult, ConfidenceLevel } from './types';
 import { fetchDealsForFSA } from '../services/dealMatcher';
 import { getSettings } from '../config/settings';
 import type { FlippDealRow } from '../services/dealMatcher';
+import { localDate } from './offer-evidence';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -128,6 +129,42 @@ function dealConfidence(validTo: string): ConfidenceLevel {
   return 'stale';
 }
 
+
+/**
+ * A deal as an offer. The flyer's end date becomes validTo (store-local
+ * date) so the planner judges it against the shopping window; the fetch time
+ * is the observation time. The old mapping put valid_to into `timestamp`,
+ * which made an expiring deal look freshly observed.
+ */
+function dealToOffer(deal: FlippDealRow, storeId: string, adapterId: string): PriceResult | null {
+  const price = deal.price_real ?? parseFloat(deal.price);
+  if (price === null || isNaN(price)) return null;
+  const end = Date.parse(deal.valid_to);
+  return {
+    price,
+    unitPrice: price,
+    unit: 'each',
+    saleInfo: null,
+    source: {
+      adapterId,
+      tier: 'flyer',
+      storeId,
+      storeName: deal.merchant,
+    },
+    timestamp: Date.now(),
+    confidence: dealConfidence(deal.valid_to),
+    imageUrl: deal.image_url ?? undefined,
+    evidence: {
+      provenance: 'flyer',
+      sourceLabel: 'Flipp flyer (not checked at your branch)',
+      productName: deal.name,
+      isSale: true,
+      validTo: isNaN(end) ? undefined : localDate(end),
+      observedAt: Date.now(),
+    },
+  };
+}
+
 // ─── Adapter ─────────────────────────────────────────────────────────────────
 
 export class FlippDealsAdapter implements PriceAdapter {
@@ -166,25 +203,7 @@ export class FlippDealsAdapter implements PriceAdapter {
 
     const match = findBestDeal(itemName, deals);
     if (!match) return null;
-
-    const price = match.deal.price_real ?? parseFloat(match.deal.price);
-    if (price === null || isNaN(price)) return null;
-
-    return {
-      price,
-      unitPrice: price,
-      unit: 'each',
-      saleInfo: null,
-      source: {
-        adapterId: this.id,
-        tier: this.tier,
-        storeId,
-        storeName: match.deal.merchant,
-      },
-      timestamp: new Date(match.deal.valid_to).getTime(),
-      confidence: dealConfidence(match.deal.valid_to),
-      imageUrl: match.deal.image_url ?? undefined,
-    };
+    return dealToOffer(match.deal, storeId, this.id);
   }
 
   async getPrices(
@@ -202,25 +221,8 @@ export class FlippDealsAdapter implements PriceAdapter {
     for (const itemName of items) {
       const match = findBestDeal(itemName, deals);
       if (!match) continue;
-
-      const price = match.deal.price_real ?? parseFloat(match.deal.price);
-      if (price === null || isNaN(price)) continue;
-
-      results.set(itemName, {
-        price,
-        unitPrice: price,
-        unit: 'each',
-        saleInfo: null,
-        source: {
-          adapterId: this.id,
-          tier: this.tier,
-          storeId,
-          storeName: match.deal.merchant,
-        },
-        timestamp: new Date(match.deal.valid_to).getTime(),
-        confidence: dealConfidence(match.deal.valid_to),
-        imageUrl: match.deal.image_url ?? undefined,
-      });
+      const offer = dealToOffer(match.deal, storeId, this.id);
+      if (offer) results.set(itemName, offer);
     }
 
     return results;

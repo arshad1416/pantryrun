@@ -110,7 +110,10 @@ describe('AC-8c: Crowd-Sourced Adapter', () => {
     expect(result).toBeNull();
   });
 
-  it('aggregates multiple submissions to median price', async () => {
+  // Behaviour change: this test used to assert the MEDIAN (5.49). A logged
+  // price is an edit, so the latest entry wins — otherwise correcting a price
+  // left the comparison unchanged.
+  it('uses the latest family entry, labelled as a manual price', async () => {
     const adapter = new CrowdsourcedAdapter();
 
     for (const price of [4.99, 5.49, 5.99]) {
@@ -127,8 +130,18 @@ describe('AC-8c: Crowd-Sourced Adapter', () => {
 
     const result = await adapter.getPrice('Bread', 'store_target');
     expect(result).not.toBeNull();
-    // Median of [4.99, 5.49, 5.99] = 5.49
-    expect(result!.price).toBeCloseTo(5.49, 2);
+    expect(result!.price).toBeCloseTo(5.99, 2);
+    expect(result!.evidence?.provenance).toBe('manual');
+  });
+
+  it('labels the built-in seed rows as sample (demo) data with their package size', async () => {
+    const adapter = new CrowdsourcedAdapter();
+    const result = await adapter.getPrice('Apples', 'no-frills');
+    expect(result!.evidence).toMatchObject({
+      provenance: 'demo',
+      sourceLabel: 'Sample price — not a real store price',
+      packageSize: { amount: 6, unit: 'pcs' },
+    });
   });
 
   it('returns prices for multiple items via getPrices', async () => {

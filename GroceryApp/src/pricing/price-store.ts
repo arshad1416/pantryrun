@@ -18,17 +18,68 @@ import { create } from 'zustand';
 import type { PriceResult, SubmittedPrice } from './types';
 import { priceRegistry } from './registry';
 import { crowdsourcedAdapter } from './crowdsourced';
+import { MAX_STOPS_LIMIT } from './basket-planner';
+import { windowFromToday, type ShoppingWindow } from './offer-evidence';
 
-import { computeTripPlan, type TripPlan } from './trip-plan';
-import { buildCacheKey, getCachedPlan, setCachedPlan } from './trip-plan-cache';
+// ─── Write ordering ─────────────────────────────────────────────────────────
+// Every fetch and every edit takes a ticket from this counter. A (store, item)
+// cell remembers the ticket of the operation that last wrote it, and an
+// operation may only write cells no newer operation has touched — so a slow
+// response that started before the user's edit can never overwrite it.
+let opSeq = 0;
+const cellTicket = new Map<string, number>();
+let clearedAt = 0;
+
+const cellKey = (storeId: string, itemId: string) => `${storeId}\u0000${itemId}`;
+
+function canWrite(ticket: number, storeId: string, itemId: string): boolean {
+  return ticket > clearedAt && (cellTicket.get(cellKey(storeId, itemId)) ?? 0) <= ticket;
+}
+
+type PerStore = Record<string, Record<string, PriceResult>>;
+
+/** Apply (store, item) → result|null writes; null removes a vanished offer. */
+function applyCells(
+  perStorePrices: PerStore,
+  ticket: number,
+  writes: { storeId: string; itemId: string; result: PriceResult | null }[],
+): { next: PerStore; touched: string[] } {
+  const next: PerStore = { ...perStorePrices };
+  const touched = new Set<string>();
+  for (const { storeId, itemId, result } of writes) {
+    if (!canWrite(ticket, storeId, itemId)) continue;
+    cellTicket.set(cellKey(storeId, itemId), ticket);
+    const store = { ...(next[storeId] ?? {}) };
+    if (result) store[itemId] = result;
+    else delete store[itemId];
+    if (Object.keys(store).length > 0) next[storeId] = store;
+    else delete next[storeId];
+    touched.add(itemId);
+  }
+  return { next, touched: [...touched] };
+}
+
+/** Flat item → price view: the last store (in key order) that has the item. */
+function flatten(perStorePrices: PerStore, prev: Record<string, PriceResult>, itemIds: string[]): Record<string, PriceResult> {
+  const prices = { ...prev };
+  for (const id of itemIds) {
+    delete prices[id];
+    for (const store of Object.values(perStorePrices)) {
+      if (store[id]) prices[id] = store[id];
+    }
+  }
+  return prices;
+}
 
 // ─── State Shape ────────────────────────────────────────────────────────────
 
 export interface PriceState {
-  /** Prices keyed by itemId */
+  /** Prices keyed by itemId (last store wins — use perStorePrices to compare) */
   prices: Record<string, PriceResult>;
   /** Per-store prices: storeId → itemId → PriceResult */
-  perStorePrices: Record<string, Record<string, PriceResult>>;
+  perStorePrices: PerStore;
+  /** Bumped on every change to perStorePrices; part of every plan cache key. */
+  priceDataVersion: number;
   /** Loading flag for batch loads */
   isLoading: boolean;
   /** Per-item loading states */
@@ -39,6 +90,14 @@ export interface PriceState {
   priceTimestamps: Record<string, number>;
   /** Whether pull-to-refresh is active */
   isRefreshing: boolean;
+
+  // ─── Planning inputs (all feed the basket planner) ────────────────────
+  /** Store limit for route planning, 1..3. */
+  maxStops: number;
+  /** Shopping window offers are judged against; null = today only. */
+  shoppingWindow: ShoppingWindow | null;
+  /** Memberships the shopper holds (enables membership-only prices). */
+  memberships: string[];
 
   // Actions
   loadPrices: (
@@ -69,19 +128,14 @@ export interface PriceState {
     items: { id: string; name: string }[],
     storeIds: string[],
   ) => Promise<void>;
-
-  // ─── Trip Plan State ──────────────────────────────────────────────────
-  /** Current trip plan (computed after prices load) */
-  tripPlan: TripPlan | null;
-  /** Max stops for trip planning */
-  maxStops: number;
-  /** Set max stops and recompute plan */
   setMaxStops: (maxStops: number) => void;
-  /** Precompute trip plan from current prices */
-  precomputeTripPlan: (
-    items: { id: string; name: string; quantity: number; unit: string }[],
-    storeNameMap: Record<string, string>,
-  ) => void;
+  setShoppingWindow: (window: ShoppingWindow | null) => void;
+  setMemberships: (memberships: string[]) => void;
+}
+
+/** The window plans use right now: the chosen one, or today. */
+export function effectiveWindow(window: ShoppingWindow | null, now: number): ShoppingWindow {
+  return window ?? windowFromToday(now);
 }
 
 // ─── Store ──────────────────────────────────────────────────────────────────
@@ -89,13 +143,15 @@ export interface PriceState {
 export const usePriceStore = create<PriceState>((set, get) => ({
   prices: {},
   perStorePrices: {},
+  priceDataVersion: 0,
   isLoading: false,
   itemLoading: {},
   error: null,
   priceTimestamps: {},
   isRefreshing: false,
-  tripPlan: null,
-  maxStops: 3,
+  maxStops: MAX_STOPS_LIMIT,
+  shoppingWindow: null,
+  memberships: [],
 
   loadPrices: async (items, defaultStoreId) => {
     try {
@@ -143,23 +199,27 @@ export const usePriceStore = create<PriceState>((set, get) => ({
   },
 
   loadSinglePrice: async (itemId, itemName, storeId) => {
+    const ticket = ++opSeq;
     try {
       set((state) => ({
         itemLoading: { ...state.itemLoading, [itemId]: true },
       }));
 
       const result = await priceRegistry.getPrice(itemName, storeId);
-      if (result) {
-        set((state) => ({
-          prices: { ...state.prices, [itemId]: result },
+      // The single-store lookup is authoritative for this one cell: a result
+      // replaces it, no result removes it, so an edit or a withdrawal shows
+      // up in every comparison immediately.
+      set((state) => {
+        const { next, touched } = applyCells(state.perStorePrices, ticket, [{ storeId, itemId, result }]);
+        const changed = touched.length > 0;
+        return {
+          perStorePrices: next,
+          prices: changed ? flatten(next, state.prices, touched) : state.prices,
+          priceDataVersion: changed ? state.priceDataVersion + 1 : state.priceDataVersion,
           itemLoading: { ...state.itemLoading, [itemId]: false },
-          priceTimestamps: { ...state.priceTimestamps, [itemId]: Date.now() },
-        }));
-      } else {
-        set((state) => ({
-          itemLoading: { ...state.itemLoading, [itemId]: false },
-        }));
-      }
+          priceTimestamps: result ? { ...state.priceTimestamps, [itemId]: Date.now() } : state.priceTimestamps,
+        };
+      });
     } catch {
       set((state) => ({
         itemLoading: { ...state.itemLoading, [itemId]: false },
@@ -168,8 +228,9 @@ export const usePriceStore = create<PriceState>((set, get) => ({
   },
 
   loadPricesForAllStores: async (items, storeIds) => {
+    const ticket = ++opSeq;
     try {
-      const results: Record<string, Record<string, PriceResult>> = {};
+      const writes: { storeId: string; itemId: string; result: PriceResult | null }[] = [];
 
       const outcomes = await Promise.allSettled(
         storeIds.map(async (storeId: string) => {
@@ -177,15 +238,10 @@ export const usePriceStore = create<PriceState>((set, get) => ({
           // NOTE: never log item names here — plaintext item names in logs
           // would contradict the hashed-lookup privacy contract (AC-14).
           const priceMap = await priceRegistry.getAllPrices(itemNames, storeId);
-          const storeResult: Record<string, PriceResult> = {};
+          // Only a store that answered may clear cells: a missing result means
+          // the offer is gone, and must not survive as a cached price.
           for (const item of items) {
-            const result = priceMap.get(item.name);
-            if (result) {
-              storeResult[item.id] = result;
-            }
-          }
-          if (Object.keys(storeResult).length > 0) {
-            results[storeId] = storeResult;
+            writes.push({ storeId, itemId: item.id, result: priceMap.get(item.name) ?? null });
           }
         })
       );
@@ -197,18 +253,22 @@ export const usePriceStore = create<PriceState>((set, get) => ({
         });
       }
 
-      set((state) => ({
-        prices: { ...state.prices, ...Object.values(results).reduce((acc, storePrices) => ({ ...acc, ...storePrices }), {}) },
-        perStorePrices: { ...state.perStorePrices, ...results },
-        priceTimestamps: {
-          ...state.priceTimestamps,
-          ...Object.fromEntries(
-            Object.values(results)
-              .flatMap(storePrices => Object.keys(storePrices))
-              .map(id => [id, Date.now()])
-          ),
-        },
-      }));
+      set((state) => {
+        const { next, touched } = applyCells(state.perStorePrices, ticket, writes);
+        if (touched.length === 0) return {};
+        const now = Date.now();
+        return {
+          perStorePrices: next,
+          prices: flatten(next, state.prices, touched),
+          priceDataVersion: state.priceDataVersion + 1,
+          priceTimestamps: {
+            ...state.priceTimestamps,
+            ...Object.fromEntries(
+              touched.filter((id) => Object.values(next).some((m) => m[id])).map((id) => [id, now]),
+            ),
+          },
+        };
+      });
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : 'Failed to load prices for all stores',
@@ -224,10 +284,10 @@ export const usePriceStore = create<PriceState>((set, get) => ({
     try {
       await crowdsourcedAdapter.submitPrice(price);
 
-      // Refresh the price display for this item
+      // Refresh the price for this item at this store — this updates the
+      // per-store map the comparison reads, not just the flat display map.
       if (refreshItemId && refreshItemName) {
-        const storeId = price.storeId;
-        await get().loadSinglePrice(refreshItemId, refreshItemName, storeId);
+        await get().loadSinglePrice(refreshItemId, refreshItemName, price.storeId);
       }
     } catch (err) {
       set({
@@ -249,7 +309,10 @@ export const usePriceStore = create<PriceState>((set, get) => ({
   },
 
   clearPerStorePrices: () => {
-    set({ perStorePrices: {} });
+    // Responses already in flight belong to the data being cleared.
+    clearedAt = ++opSeq;
+    cellTicket.clear();
+    set((state) => ({ perStorePrices: {}, priceDataVersion: state.priceDataVersion + 1 }));
   },
 
   clearError: () => {
@@ -287,31 +350,14 @@ export const usePriceStore = create<PriceState>((set, get) => ({
   },
 
   setMaxStops: (maxStops: number) => {
-    set({ maxStops, tripPlan: null }); // Reset plan so it's recomputed
+    set({ maxStops: Math.max(1, Math.min(MAX_STOPS_LIMIT, Math.floor(maxStops) || 1)) });
   },
 
-  precomputeTripPlan: (items, storeNameMap) => {
-    const { perStorePrices, maxStops } = get();
-    const storeIds = Object.keys(perStorePrices);
-    if (storeIds.length === 0 || items.length === 0) {
-      set({ tripPlan: null });
-      return;
-    }
+  setShoppingWindow: (window) => {
+    set({ shoppingWindow: window });
+  },
 
-    // Check cache
-    const cacheKey = buildCacheKey(
-      maxStops,
-      items.map((i) => i.id),
-      storeIds,
-      Object.fromEntries(items.map((i) => [i.id, i.quantity])),
-    );
-
-    let plan = getCachedPlan(cacheKey);
-    if (!plan) {
-      plan = computeTripPlan(items, perStorePrices, maxStops, undefined, storeNameMap);
-      setCachedPlan(cacheKey, plan);
-    }
-
-    set({ tripPlan: plan });
+  setMemberships: (memberships) => {
+    set({ memberships: [...new Set(memberships.map((m) => m.trim()).filter(Boolean))].sort() });
   },
 }));

@@ -10,6 +10,12 @@
  *   - 1-2 submissions      → estimated
  *   - 3-5 submissions      → recent
  *   - 5+ submissions       → real_time
+ *
+ * Provenance: the built-in seed rows are SAMPLE data and are reported as
+ * provenance 'demo' — never as crowd or store prices. As soon as anyone in
+ * the family logs a price for an item at a store, that entry (the latest one)
+ * is what this adapter returns, with provenance 'manual', so an edit takes
+ * effect immediately instead of being averaged away by older entries.
  */
 
 import type { PriceAdapter } from './adapter';
@@ -31,6 +37,9 @@ type StorePriceMap = Map<string, SubmittedPrice[]>;
 function normalizeItemName(name: string): string {
   return name.toLowerCase().trim();
 }
+
+/** submittedBy marker for the built-in sample rows. */
+export const SEED_SUBMITTER = 'system-seed';
 
 function getConfidenceLevel(count: number): ConfidenceLevel {
   if (count >= 5) return 'real_time';
@@ -93,7 +102,7 @@ export class CrowdsourcedAdapter implements PriceAdapter {
             price,
             unit: item.unit,
             quantity: item.quantity,
-            submittedBy: 'system-seed',
+            submittedBy: SEED_SUBMITTER,
           });
         }
       }
@@ -163,35 +172,57 @@ export class CrowdsourcedAdapter implements PriceAdapter {
 
     if (recent.length === 0) return null;
 
-    // Use median price (more robust than mean)
+    const manual = recent.filter((s) => s.submittedBy !== SEED_SUBMITTER);
+    if (manual.length > 0) {
+      const latest = manual.reduce((a, b) => (b.timestamp >= a.timestamp ? b : a));
+      const { unitPrice, displayUnit } = normalizeUnitPrice(latest.price, latest.quantity || 1, latest.unit);
+      return {
+        price: latest.price,
+        unitPrice,
+        unit: latest.unit,
+        displayUnit,
+        saleInfo: null,
+        source: { adapterId: this.id, tier: this.tier, storeId, storeName: latest.storeName },
+        timestamp: latest.timestamp,
+        confidence: getConfidenceLevel(manual.length),
+        evidence: {
+          // Package size, sale dates etc. are only known if the person said so.
+          ...latest.evidence,
+          provenance: 'manual',
+          sourceLabel: 'Entered by your family',
+          productName: latest.evidence?.productName ?? latest.itemName,
+          observedAt: latest.timestamp,
+        },
+      };
+    }
+
+    // Sample rows only: median of the seed (they are one row per store today).
     const prices = recent.map((s) => s.price).sort((a, b) => a - b);
     const medianPrice = prices[Math.floor(prices.length / 2)];
-
-    // Average unit/quantity for normalization
-    const avgQuantity =
-      recent.reduce((sum, s) => sum + s.quantity, 0) / recent.length;
-    const unit = recent[0].unit;
-
-    const { unitPrice, displayUnit } = normalizeUnitPrice(
-      medianPrice,
-      avgQuantity,
-      unit,
-    );
+    const sample = recent[0];
+    const { unitPrice, displayUnit } = normalizeUnitPrice(medianPrice, sample.quantity, sample.unit);
 
     return {
       price: medianPrice,
       unitPrice,
-      unit,
+      unit: sample.unit,
       displayUnit,
       saleInfo: null, // crowd-sourced can't detect sales
       source: {
         adapterId: this.id,
         tier: this.tier,
         storeId,
-        storeName: recent[0].storeName,
+        storeName: sample.storeName,
       },
       timestamp: Math.max(...recent.map((s) => s.timestamp)),
-      confidence: getConfidenceLevel(recent.length),
+      confidence: 'estimated',
+      evidence: {
+        provenance: 'demo',
+        sourceLabel: 'Sample price — not a real store price',
+        productName: sample.itemName,
+        packageSize: { amount: sample.quantity, unit: sample.unit },
+        observedAt: Math.max(...recent.map((s) => s.timestamp)),
+      },
     };
   }
 

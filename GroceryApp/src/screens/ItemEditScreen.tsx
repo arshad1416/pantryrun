@@ -27,6 +27,8 @@ import type { RootStackParamList } from '../navigation/deepLinks';
 import { usePriceStore } from '../pricing/price-store';
 import { useListStore } from '../state/useListStore';
 import { crowdsourcedAdapter } from '../pricing/crowdsourced';
+import { buildManualOffer } from '../pricing/manual-offer';
+import { getEvidence, PROVENANCE_LABEL } from '../pricing/offer-evidence';
 
 // ─── Props ──────────────────────────────────────────────────────────────────
 
@@ -63,6 +65,9 @@ export default function ItemEditScreen({ route, navigation }: Props) {
   const [showPriceForm, setShowPriceForm] = useState(false);
   const [priceInput, setPriceInput] = useState('');
   const [priceStoreInput, setPriceStoreInput] = useState('');
+  const [pricePackageInput, setPricePackageInput] = useState('');
+  const [priceByWeight, setPriceByWeight] = useState<'per_kg' | 'per_lb' | null>(null);
+  const [priceSaleEndsInput, setPriceSaleEndsInput] = useState('');
   const submitCrowdPrice = usePriceStore((s) => s.submitCrowdPrice);
   const loadSinglePrice = usePriceStore((s) => s.loadSinglePrice);
   const prices = usePriceStore((s) => s.prices);
@@ -345,8 +350,8 @@ export default function ItemEditScreen({ route, navigation }: Props) {
                   ${itemPrice.price.toFixed(2)}
                 </Text>
                 <Text style={styles.priceMeta}>
-                  Source: {itemPrice.source.storeName} ·{' '}
-                  {itemPrice.confidence}
+                  {itemPrice.source.storeName} · {PROVENANCE_LABEL[getEvidence(itemPrice).provenance]}
+                  {getEvidence(itemPrice).validTo ? ` · until ${getEvidence(itemPrice).validTo}` : ''}
                 </Text>
               </View>
             ) : (
@@ -380,29 +385,63 @@ export default function ItemEditScreen({ route, navigation }: Props) {
                   placeholder="Store name"
                   placeholderTextColor="#bbb"
                 />
+                <View style={styles.weightRow}>
+                  {(['per_kg', 'per_lb'] as const).map((basis) => (
+                    <TouchableOpacity
+                      key={basis}
+                      style={[styles.weightChip, priceByWeight === basis && styles.weightChipActive]}
+                      onPress={() => setPriceByWeight(priceByWeight === basis ? null : basis)}
+                      accessibilityRole="switch"
+                      accessibilityState={{ checked: priceByWeight === basis }}
+                    >
+                      <Text style={[styles.weightChipText, priceByWeight === basis && styles.weightChipTextActive]}>
+                        {basis === 'per_kg' ? 'Price per kg' : 'Price per lb'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                {!priceByWeight && (
+                  <TextInput
+                    style={styles.priceInputField}
+                    value={pricePackageInput}
+                    onChangeText={setPricePackageInput}
+                    placeholder="Package size, optional (e.g. 340 g)"
+                    placeholderTextColor="#bbb"
+                  />
+                )}
+                <TextInput
+                  style={styles.priceInputField}
+                  value={priceSaleEndsInput}
+                  onChangeText={setPriceSaleEndsInput}
+                  placeholder="Sale ends, optional (YYYY-MM-DD)"
+                  placeholderTextColor="#bbb"
+                />
                 <TouchableOpacity
                   style={styles.submitPriceBtn}
                   onPress={async () => {
                     if (!priceInput || !priceStoreInput || !existingItem) return;
-                    const price = parseFloat(priceInput);
-                    if (isNaN(price) || price <= 0) {
-                      Alert.alert('Invalid', 'Enter a valid price');
+                    const offer = buildManualOffer({
+                      itemName: existingItem.name,
+                      price: priceInput,
+                      storeName: priceStoreInput,
+                      packageSize: priceByWeight ? undefined : pricePackageInput,
+                      byWeight: priceByWeight ?? undefined,
+                      saleEnds: priceSaleEndsInput,
+                      submittedBy: activeMemberId ?? 'unknown',
+                    });
+                    if (!offer.ok) {
+                      Alert.alert('Invalid', offer.error);
                       return;
                     }
                     try {
-                      await submitCrowdPrice({
-                        itemName: existingItem.name,
-                        storeId: priceStoreInput.toLowerCase().replace(/\s+/g, '_'),
-                        storeName: priceStoreInput,
-                        price,
-                        unit: existingItem.unit,
-                        quantity: existingItem.quantity,
-                        submittedBy: activeMemberId ?? 'unknown',
-                      }, existingItem.id, existingItem.name);
-                      Alert.alert('Submitted', 'Price logged successfully!');
+                      await submitCrowdPrice(offer.submission, existingItem.id, existingItem.name);
+                      Alert.alert('Submitted', 'Price logged. Comparisons now use it.');
                       setShowPriceForm(false);
                       setPriceInput('');
                       setPriceStoreInput('');
+                      setPricePackageInput('');
+                      setPriceByWeight(null);
+                      setPriceSaleEndsInput('');
                     } catch (err) {
                       Alert.alert('Error', 'Failed to submit price');
                     }
@@ -639,6 +678,29 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#333',
     marginBottom: 4,
+  },
+  weightRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+  },
+  weightChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#ddd',
+  },
+  weightChipActive: {
+    borderColor: '#16A34A',
+    backgroundColor: '#16A34A',
+  },
+  weightChipText: {
+    fontSize: 12,
+    color: '#555',
+  },
+  weightChipTextActive: {
+    color: '#FFFFFF',
   },
   priceMeta: {
     fontSize: 12,
