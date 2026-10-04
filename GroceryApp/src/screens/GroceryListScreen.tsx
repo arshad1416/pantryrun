@@ -35,6 +35,7 @@ import type { RootStackParamList } from '../navigation/deepLinks';
 import AddItemSheet from './AddItemSheet';
 import FlyerScanFlow from '../components/FlyerScanFlow';
 import StopOptimizer from '../components/StopOptimizer';
+import ChecklistImportSheet from '../components/ChecklistImportSheet';
 import UndoToast from '../components/UndoToast';
 import { usePriceStore } from '../pricing/price-store';
 import { useThemeStore, useActiveTheme } from '../state/useThemeStore';
@@ -158,6 +159,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
   // Local state
   const [searchQuery, setSearchQuery] = useState('');
   const [showAddSheet, setShowAddSheet] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [showFlyerScan, setShowFlyerScan] = useState(false);
   const [listName, setListName] = useState('Grocery List');
   const [gotItExpanded, setGotItExpanded] = useState(false);
@@ -1284,9 +1286,17 @@ export default function GroceryListScreen({ route, navigation }: Props) {
       </View>
 
       {/* Add Item Sheet */}
+      <ChecklistImportSheet
+        visible={showImport}
+        listId={listId}
+        onClose={() => setShowImport(false)}
+      />
+
       <AddItemSheet
         visible={showAddSheet}
         listId={listId}
+        // iOS can't present a modal while another is still dismissing.
+        onImportChecklist={() => setTimeout(() => setShowImport(true), 400)}
         onClose={() => {
           setShowAddSheet(false);
           setActiveTab('lists');

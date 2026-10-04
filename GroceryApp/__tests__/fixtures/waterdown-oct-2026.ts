@@ -93,7 +93,7 @@ export const BASKET: BasketItem[] = [
   { id: 'ketchup', name: 'ketchup', quantity: 1, unit: '', notes: 'sale only' },
   { id: 'cascade', name: 'Cascade pods', quantity: 1, unit: '', notes: 'sale only' },
   { id: 'gummies', name: 'gummies', quantity: 1, unit: '' },
-  { id: 'eggs', name: 'eggs', quantity: 12, unit: 'pcs' },
+  { id: 'eggs', name: 'eggs', quantity: 1, unit: 'dozen' },
   { id: 'bread', name: 'bread', quantity: 1, unit: '' },
   { id: 'rice', name: 'basmati rice', quantity: 1, unit: 'bag' },
 ];
@@ -172,7 +172,7 @@ export const KEEP_CHECKLIST = `Groceries this week
 ☐ garlic mayo
 ☐ ketchup - sale only
 ☐ Cascade pods — sale only
-☐ eggs x12
+☐ eggs 1 dozen
 ☐ bread
 Costco:
 ☐ gummies
