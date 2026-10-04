@@ -1,6 +1,8 @@
 /**
  * StoreCard — Horizontal scroll card for store selection.
- * Shows store name + total price. Selected card has green glow/highlight.
+ * Shows store name, the total for the items this store can supply, and how
+ * many of the basket's items that total covers. Selected card has green
+ * glow/highlight.
  */
 
 import React from 'react';
@@ -13,7 +15,10 @@ interface StoreCardProps {
   storeName: string;
   storeId: string;
   total: number;
-  itemCount: number;
+  /** Basket items this store has an eligible price for */
+  coveredCount: number;
+  /** Basket items in total */
+  totalCount: number;
   isSelected: boolean;
   onPress: () => void;
 }
@@ -23,7 +28,8 @@ export default function StoreCard({
   storeName,
   storeId,
   total,
-  itemCount,
+  coveredCount,
+  totalCount,
   isSelected,
   onPress,
 }: StoreCardProps) {
@@ -82,10 +88,12 @@ export default function StoreCard({
         {storeName}
       </Text>
       <Text style={[styles.total, { color: isSelected ? theme.primary : theme.secondaryText }]}>
-        ${total.toFixed(2)}
+        {coveredCount > 0 ? `$${total.toFixed(2)}` : 'No prices'}
       </Text>
       <Text style={[styles.itemCount, { color: theme.secondaryText }]}>
-        {itemCount} item{itemCount !== 1 ? 's' : ''}
+        {coveredCount === totalCount
+          ? `${totalCount} item${totalCount !== 1 ? 's' : ''}`
+          : `${coveredCount} of ${totalCount} items`}
       </Text>
     </TouchableOpacity>
   );

@@ -250,21 +250,19 @@ describe('computeStopProposals — edge cases', () => {
     };
     const result = computeStopProposals(items, perStorePrices, {});
 
-    // 1-stop: store_a = 4.99 (milk only), store_b = 5.49 + 12.99 = 18.48
-    // store_a is cheaper single stop = 4.99
+    // DEFECT FIXED (coverage-blind 1-stop): store_a at 4.99 omits the
+    // specialty item, so it must not be the 1-stop pick. Coverage first:
+    // store_b (5.49 + 12.99 = 18.48) is the only full-basket single stop.
     expect(result[0].numStops).toBe(1);
-    expect(result[0].totalCost).toBeCloseTo(4.99, 2);
+    expect(result[0].stores[0].storeId).toBe('store_b');
+    expect(result[0].totalCost).toBeCloseTo(18.48, 2);
+    expect(result[0].coveredCount).toBe(2);
 
-    // 2-stop (if proposals continue): select store_a + store_b
-    // milk: min(4.99, 5.49) = 4.99, specialty_item: 12.99 (only in store_b)
-    // total = 17.98 (MUST be less than 1-stop 4.99... but it's not!)
-    // Actually: 1-stop picks store_a with total=4.99 (specialty_item has no price)
-    // 2-stop: milk=4.99 (store_a) + specialty_item=12.99 (store_b) = 17.98
-    // That's MORE expensive than 1-stop, so the algorithm breaks -> no 2-stop proposal
-    // Actually wait: let me re-check. 1-stop with only store_a gets cost computeTotal(['store_a']) = 4.99
-    // 2-stop: computeTotal(['store_a', 'store_b']) = min(4.99,5.49) for milk + 12.99 for specialty = 17.98
-    // Since 17.98 >= 4.99, the greedy loop breaks before adding. So only 1 proposal.
-    expect(result).toHaveLength(1);
+    // 2-stop: milk@store_a 4.99 + specialty@store_b 12.99 = 17.98, a real
+    // saving of 0.50 against the same full basket.
+    expect(result).toHaveLength(2);
+    expect(result[1].totalCost).toBeCloseTo(17.98, 2);
+    expect(result[1].savingsVsOneStop).toBeCloseTo(0.5, 2);
   });
 
   it('handles zero-price items without division-by-zero errors', () => {

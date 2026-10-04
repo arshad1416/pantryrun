@@ -11,6 +11,7 @@
 
 import { getTurso, isTursoReady } from './tursoClient';
 import { getCachedDeals, setCachedDeals } from './dealCache';
+import { extractKeywords, matchScore } from '../pricing/basket';
 import type { GroceryItem } from '../types';
 
 /** A deal row from the flipp_deals Turso table (internal type, also used by dealCache) */
@@ -43,53 +44,6 @@ export interface OptimizedStoreRun {
   /** Items that didn't match any deal */
   unmatched: { listItemId: string; itemName: string }[];
   totalStops: number;
-}
-
-// ─── Constants ───────────────────────────────────────────────────────────────
-
-/** Words that add no matching value in grocery context */
-const STOP_WORDS = new Set([
-  'a', 'an', 'the', 'and', 'or', 'of', 'in', 'on', 'at', 'to', 'for',
-  'with', 'without', 'fresh', 'frozen', 'organic', 'natural', 'premium',
-  'value', 'selected', 'choice', 'best', 'plus', 'all', 'each', 'per',
-  'pack', 'bag', 'box', 'bottle', 'can', 'jar', 'tub', 'tray', 'bunch',
-  'kg', 'g', 'ml', 'l', 'oz', 'lb', 'litre', 'liter', 'gram', 'grams',
-  'piece', 'pieces', 'count', 'size', 'large', 'medium', 'small',
-  'grade', 'type', 'style', 'brand', 'save', 'caisse', 'chaque',
-]);
-
-// ─── Keyword extraction ──────────────────────────────────────────────────────
-
-/** Extract meaningful keywords from a product name for matching */
-function extractKeywords(name: string): string[] {
-  if (!name || typeof name !== 'string') return [];
-
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, ' ')     // strip punctuation, keep hyphens
-    .split(/\s+/)
-    .filter((token) => token.length >= 2 && !STOP_WORDS.has(token));
-}
-
-/** Score how well query tokens match deal name tokens (0..1) */
-function matchScore(queryTokens: string[], dealTokens: string[]): number {
-  if (queryTokens.length === 0 || dealTokens.length === 0) return 0;
-
-  let hits = 0;
-  for (const qt of queryTokens) {
-    for (const dt of dealTokens) {
-      // Exact match or one is substring of the other
-      if (qt === dt || dt.includes(qt) || qt.includes(dt)) {
-        hits++;
-        break;
-      }
-    }
-  }
-
-  // Require at least 2 token matches for a meaningful match
-  if (hits < 2 && queryTokens.length > 1) return 0;
-
-  return hits / queryTokens.length;
 }
 
 // ─── Deal fetching (cached) ──────────────────────────────────────────────────
@@ -154,8 +108,12 @@ function matchItemToDeals(
   if (queryTokens.length === 0) return [];
 
   const scored: { deal: FlippDealRow; score: number }[] = [];
+  const now = Date.now();
 
   for (const deal of deals) {
+    // Cached deals outlive the SQL expiry filter — skip ended offers.
+    const end = new Date(deal.valid_to).getTime();
+    if (!isNaN(end) && end < now) continue;
     const dealTokens = extractKeywords(deal.name);
     const score = matchScore(queryTokens, dealTokens);
     if (score >= threshold) {

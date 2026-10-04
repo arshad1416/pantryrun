@@ -2,10 +2,13 @@
  * Trip Plan Cache — in-memory LRU with 5-minute TTL.
  *
  * Caches computed TripPlan results keyed by a deterministic hash of
- * { maxStops, itemIds, storeIds }.
+ * { maxStops, itemIds, storeIds, quantities, units, prices }. The prices
+ * the plan was computed from are part of the key, so a changed price can
+ * never return a stale plan.
  */
 
 import type { TripPlan } from './trip-plan';
+import type { PriceResult } from './types';
 
 // ─── Cache Shape ────────────────────────────────────────────────────────────
 
@@ -26,8 +29,10 @@ export interface TripPlanCacheKey {
   maxStops: number;
   itemIds: string[];
   storeIds: string[];
-  /** Quantity per item ID — ensures cache is invalidated when quantities change. */
-  quantities: Record<string, number>;
+  /** Quantity + unit per item ID — a changed quantity or unit is a different basket. */
+  quantities: Record<string, string>;
+  /** Every price the plan can use, as `store:item=price/package unit` */
+  prices: string[];
 }
 
 /**
@@ -36,15 +41,24 @@ export interface TripPlanCacheKey {
  */
 export function buildCacheKey(
   maxStops: number,
-  itemIds: string[],
-  storeIds: string[],
-  quantities: Record<string, number>,
+  items: { id: string; quantity: number; unit?: string }[],
+  perStorePrices: Record<string, Record<string, PriceResult>>,
 ): TripPlanCacheKey {
+  const storeIds = Object.keys(perStorePrices).sort();
+  const itemIds = items.map((i) => i.id).sort();
+  const prices: string[] = [];
+  for (const sid of storeIds) {
+    for (const id of itemIds) {
+      const pr = perStorePrices[sid]?.[id];
+      if (pr) prices.push(`${sid}:${id}=${pr.price}/${pr.packageSize ?? ''}${pr.unit}`);
+    }
+  }
   return {
     maxStops,
-    itemIds: [...itemIds].sort(),
-    storeIds: [...storeIds].sort(),
-    quantities,
+    itemIds,
+    storeIds,
+    quantities: Object.fromEntries(items.map((i) => [i.id, `${i.quantity}${i.unit ?? ''}`])),
+    prices,
   };
 }
 

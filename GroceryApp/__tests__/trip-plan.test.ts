@@ -77,8 +77,8 @@ describe('computeTripPlan — empty inputs return the zeroed shape', () => {
     const plan = computeTripPlan(items, {});
     expectZeroedShape(plan, 2);
     expect(plan.unassigned).toEqual([
-      { itemId: 'milk', itemName: 'milk', quantity: 2, price: 0, unit: 'ea' },
-      { itemId: 'eggs', itemName: 'eggs', quantity: 1, price: 0, unit: 'ea' },
+      { itemId: 'milk', itemName: 'milk', quantity: 2, price: 0, unit: 'ea', lineTotal: 0 },
+      { itemId: 'eggs', itemName: 'eggs', quantity: 1, price: 0, unit: 'ea', lineTotal: 0 },
     ]);
   });
 
@@ -106,6 +106,7 @@ describe('computeTripPlan — zero relevant stores returns the same zeroed shape
       quantity: 3,
       price: 0,
       unit: 'ea',
+      lineTotal: 0,
     });
   });
 
@@ -128,7 +129,7 @@ describe('computeTripPlan — unpriced items land in unassigned, not dropped', (
     expect(plan.stops).toHaveLength(1);
     expect(plan.stops[0].items.map((it) => it.itemId)).toEqual(['milk']);
     expect(plan.unassigned).toEqual([
-      { itemId: 'caviar', itemName: 'caviar', quantity: 2, price: 0, unit: 'jar' },
+      { itemId: 'caviar', itemName: 'caviar', quantity: 2, price: 0, unit: 'jar', lineTotal: 0 },
     ]);
     // Unpriced items contribute nothing to cost — but are not silently dropped.
     expect(plan.totalCost).toBeCloseTo(4.99);

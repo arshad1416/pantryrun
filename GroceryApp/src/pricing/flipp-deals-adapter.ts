@@ -17,6 +17,7 @@
 
 import type { PriceAdapter } from './adapter';
 import type { PriceResult, ConfidenceLevel } from './types';
+import { extractKeywords, matchScore } from './basket';
 import { fetchDealsForFSA } from '../services/dealMatcher';
 import { getSettings } from '../config/settings';
 import type { FlippDealRow } from '../services/dealMatcher';
@@ -26,6 +27,8 @@ import type { FlippDealRow } from '../services/dealMatcher';
 /** Cached deals keyed by merchant name */
 let _merchantDealsCache: Record<string, FlippDealRow[]> | null = null;
 let _cachedFsa: string | null = null;
+/** When the cached deals were fetched — the price's observation time. */
+let _fetchedAt = 0;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -35,42 +38,6 @@ function merchantToStoreId(merchant: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
-}
-
-/** Extract meaningful keywords from a product name */
-const STOP_WORDS = new Set([
-  'a', 'an', 'the', 'and', 'or', 'of', 'in', 'on', 'at', 'to', 'for',
-  'with', 'without', 'fresh', 'frozen', 'organic', 'natural', 'premium',
-  'value', 'selected', 'choice', 'best', 'plus', 'all', 'each', 'per',
-  'pack', 'bag', 'box', 'bottle', 'can', 'jar', 'tub', 'tray', 'bunch',
-  'kg', 'g', 'ml', 'l', 'oz', 'lb', 'litre', 'liter', 'gram', 'grams',
-  'piece', 'pieces', 'count', 'size', 'large', 'medium', 'small',
-  'grade', 'type', 'style', 'brand', 'save', 'caisse', 'chaque',
-]);
-
-function extractKeywords(name: string): string[] {
-  if (!name || typeof name !== 'string') return [];
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, ' ')
-    .split(/\s+/)
-    .filter((t) => t.length >= 2 && !STOP_WORDS.has(t));
-}
-
-/** Score how well query tokens match deal name tokens (0..1) */
-function matchScore(queryTokens: string[], dealTokens: string[]): number {
-  if (queryTokens.length === 0 || dealTokens.length === 0) return 0;
-  let hits = 0;
-  for (const qt of queryTokens) {
-    for (const dt of dealTokens) {
-      if (qt === dt || dt.includes(qt) || qt.includes(dt)) {
-        hits++;
-        break;
-      }
-    }
-  }
-  if (hits < 2 && queryTokens.length > 1) return 0;
-  return hits / queryTokens.length;
 }
 
 /** Build merchant-keyed deal cache for the user's FSA */
@@ -90,10 +57,17 @@ async function ensureDealsLoaded(fsa: string): Promise<Record<string, FlippDealR
 
   _merchantDealsCache = byMerchant;
   _cachedFsa = fsa;
+  _fetchedAt = Date.now();
   return byMerchant;
 }
 
-/** Find best deal match for an item name from a list of deals */
+/** Offer end as epoch ms, or null when unparseable. */
+function validToMs(validTo: string): number | null {
+  const end = new Date(validTo).getTime();
+  return isNaN(end) ? null : end;
+}
+
+/** Find best unexpired deal match for an item name from a list of deals */
 function findBestDeal(
   itemName: string,
   deals: FlippDealRow[],
@@ -103,8 +77,12 @@ function findBestDeal(
   if (queryTokens.length === 0) return null;
 
   let best: { deal: FlippDealRow; score: number } | null = null;
+  const now = Date.now();
 
   for (const deal of deals) {
+    // The SQL filters expired rows, but the cache outlives a flyer week.
+    const end = validToMs(deal.valid_to);
+    if (end !== null && end < now) continue;
     const dealTokens = extractKeywords(deal.name);
     const score = matchScore(queryTokens, dealTokens);
     if (score >= threshold && (!best || score > best.score || (score === best.score && (deal.price_real ?? Infinity) < (best.deal.price_real ?? Infinity)))) {
@@ -153,6 +131,30 @@ export class FlippDealsAdapter implements PriceAdapter {
     return settings.flippFsa ?? 'L0R';
   }
 
+  /** Build the PriceResult for a matched deal, or null if it has no usable price. */
+  private toPriceResult(deal: FlippDealRow, storeId: string): PriceResult | null {
+    const price = deal.price_real ?? parseFloat(deal.price);
+    if (price === null || isNaN(price)) return null;
+    const validTo = validToMs(deal.valid_to);
+    return {
+      price,
+      unitPrice: price,
+      unit: 'each',
+      saleInfo: null,
+      source: {
+        adapterId: this.id,
+        tier: this.tier,
+        storeId,
+        storeName: deal.merchant,
+      },
+      timestamp: _fetchedAt || Date.now(),
+      confidence: dealConfidence(deal.valid_to),
+      imageUrl: deal.image_url ?? undefined,
+      matchedName: deal.name,
+      ...(validTo !== null ? { validTo } : {}),
+    };
+  }
+
   async getPrice(
     itemName: string,
     storeId: string,
@@ -165,26 +167,7 @@ export class FlippDealsAdapter implements PriceAdapter {
     if (!deals || deals.length === 0) return null;
 
     const match = findBestDeal(itemName, deals);
-    if (!match) return null;
-
-    const price = match.deal.price_real ?? parseFloat(match.deal.price);
-    if (price === null || isNaN(price)) return null;
-
-    return {
-      price,
-      unitPrice: price,
-      unit: 'each',
-      saleInfo: null,
-      source: {
-        adapterId: this.id,
-        tier: this.tier,
-        storeId,
-        storeName: match.deal.merchant,
-      },
-      timestamp: new Date(match.deal.valid_to).getTime(),
-      confidence: dealConfidence(match.deal.valid_to),
-      imageUrl: match.deal.image_url ?? undefined,
-    };
+    return match ? this.toPriceResult(match.deal, storeId) : null;
   }
 
   async getPrices(
@@ -201,26 +184,8 @@ export class FlippDealsAdapter implements PriceAdapter {
 
     for (const itemName of items) {
       const match = findBestDeal(itemName, deals);
-      if (!match) continue;
-
-      const price = match.deal.price_real ?? parseFloat(match.deal.price);
-      if (price === null || isNaN(price)) continue;
-
-      results.set(itemName, {
-        price,
-        unitPrice: price,
-        unit: 'each',
-        saleInfo: null,
-        source: {
-          adapterId: this.id,
-          tier: this.tier,
-          storeId,
-          storeName: match.deal.merchant,
-        },
-        timestamp: new Date(match.deal.valid_to).getTime(),
-        confidence: dealConfidence(match.deal.valid_to),
-        imageUrl: match.deal.image_url ?? undefined,
-      });
+      const result = match ? this.toPriceResult(match.deal, storeId) : null;
+      if (result) results.set(itemName, result);
     }
 
     return results;
@@ -252,6 +217,7 @@ export class FlippDealsAdapter implements PriceAdapter {
   clearCache(): void {
     _merchantDealsCache = null;
     _cachedFsa = null;
+    _fetchedAt = 0;
   }
 }
 

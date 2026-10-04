@@ -2,11 +2,11 @@
  * TripPlanSheet — bottom sheet showing the optimized trip plan.
  *
  * Displays:
- *  - Per-stop sections: store name, items with prices, subtotal
- *  - Total row with savings vs. the best single-store trip (plan.savings
- *    from trip-plan.ts — one-stop baseline, same as stop-optimizer's
- *    savingsVsOneStop; floored at 0)
- *  - "Unassigned" section for items without prices
+ *  - Per-stop sections: store name, items with line totals and where each
+ *    price came from, subtotal
+ *  - Total row with how many items it covers, and savings vs. the best
+ *    single-store trip only when that trip covers the same items
+ *  - "Unassigned" section for items without an eligible price
  */
 
 import React, { useRef } from 'react';
@@ -70,6 +70,8 @@ export default function TripPlanSheet({
   ).current;
 
   if (!plan) return null;
+  const totalItems =
+    plan.stops.reduce((n, stop) => n + stop.items.length, 0) + plan.unassigned.length;
 
   return (
     <Modal
@@ -142,15 +144,21 @@ export default function TripPlanSheet({
                       },
                     ]}
                   >
-                    <Text
-                      style={[styles.itemName, { color: theme.text }]}
-                      numberOfLines={1}
-                    >
-                      {item.itemName}
-                      {item.quantity > 1 ? ` ×${item.quantity}` : ''}
-                    </Text>
+                    <View style={styles.itemCell}>
+                      <Text style={[styles.itemName, { color: theme.text }]} numberOfLines={1}>
+                        {item.itemName}
+                        {item.quantity > 1 || item.unit ? ` ×${item.quantity}${item.unit ? ` ${item.unit}` : ''}` : ''}
+                      </Text>
+                      {(item.evidence || item.quantityAssumed) && (
+                        <Text style={[styles.itemEvidence, { color: theme.secondaryText }]} numberOfLines={1}>
+                          {[item.evidence, item.quantityAssumed ? 'qty assumed: 1 pkg' : null]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </Text>
+                      )}
+                    </View>
                     <Text style={[styles.itemPrice, { color: theme.text }]}>
-                      ${(item.price * item.quantity).toFixed(2)}
+                      ${item.lineTotal.toFixed(2)}
                     </Text>
                   </View>
                 ))}
@@ -183,7 +191,7 @@ export default function TripPlanSheet({
                 ]}
               >
                 <Text style={[styles.unassignedTitle, { color: theme.unassignedText }]}>
-                  ⚠️ Items without prices
+                  ⚠️ Not in this total — no eligible price
                 </Text>
                 {plan.unassigned.map((item) => (
                   <Text
@@ -201,13 +209,20 @@ export default function TripPlanSheet({
             <View style={[styles.totalCard, { borderColor: theme.border }]}>
               <View style={styles.totalRow}>
                 <Text style={[styles.totalLabel, { color: theme.secondaryText }]}>
-                  Estimated Total
+                  {plan.unassigned.length > 0
+                    ? `Estimated Total (${totalItems - plan.unassigned.length} of ${totalItems} items)`
+                    : 'Estimated Total'}
                 </Text>
                 <Text style={[styles.totalValue, { color: theme.text }]}>
                   ${plan.totalCost.toFixed(2)}
                 </Text>
               </View>
-              {plan.savings > 0 && (
+              {!plan.savingsComparable && plan.numStops > 1 && (
+                <Text style={[styles.savingsLabel, { color: theme.secondaryText, marginTop: 6 }]}>
+                  No single store carries the same items, so there's no 1-stop price to compare.
+                </Text>
+              )}
+              {plan.savingsComparable && plan.savings > 0 && (
                 <View
                   style={[styles.savingsRow, { backgroundColor: theme.savingsBg }]}
                 >
@@ -312,10 +327,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 6,
   },
-  itemName: {
-    fontSize: 13,
+  itemCell: {
     flex: 1,
     marginRight: 12,
+  },
+  itemName: {
+    fontSize: 13,
+  },
+  itemEvidence: {
+    fontSize: 11,
+    marginTop: 1,
   },
   itemPrice: {
     fontSize: 13,

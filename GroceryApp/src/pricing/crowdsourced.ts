@@ -28,6 +28,9 @@ type StorePriceMap = Map<string, SubmittedPrice[]>;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+/** `submittedBy` of the built-in sample prices. */
+const SEED_SUBMITTER = 'system-seed';
+
 function normalizeItemName(name: string): string {
   return name.toLowerCase().trim();
 }
@@ -93,7 +96,7 @@ export class CrowdsourcedAdapter implements PriceAdapter {
             price,
             unit: item.unit,
             quantity: item.quantity,
-            submittedBy: 'system-seed',
+            submittedBy: SEED_SUBMITTER,
           });
         }
       }
@@ -163,9 +166,10 @@ export class CrowdsourcedAdapter implements PriceAdapter {
 
     if (recent.length === 0) return null;
 
-    // Use median price (more robust than mean)
-    const prices = recent.map((s) => s.price).sort((a, b) => a - b);
-    const medianPrice = prices[Math.floor(prices.length / 2)];
+    // Use median price (more robust than mean); its quantity is the package it bought
+    const byPrice = [...recent].sort((a, b) => a.price - b.price);
+    const median = byPrice[Math.floor(byPrice.length / 2)];
+    const medianPrice = median.price;
 
     // Average unit/quantity for normalization
     const avgQuantity =
@@ -192,6 +196,9 @@ export class CrowdsourcedAdapter implements PriceAdapter {
       },
       timestamp: Math.max(...recent.map((s) => s.timestamp)),
       confidence: getConfidenceLevel(recent.length),
+      ...(median.quantity > 0 ? { packageSize: median.quantity } : {}),
+      // Seeded sample prices are demo data, never an observed shelf price.
+      ...(recent.every((s) => s.submittedBy === SEED_SUBMITTER) ? { isDemo: true } : {}),
     };
   }
 
