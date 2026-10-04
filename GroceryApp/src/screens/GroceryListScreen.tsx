@@ -4,7 +4,7 @@
  * items grouped by category with quantity steppers, and bottom tab bar.
  */
 
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -26,19 +26,22 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useIsFocused } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import type { GroceryItem, GroceryCategory } from '../types';
-import type { PriceResult } from '../pricing/types';
 import { friendlyError } from '../utils/friendlyError';
 import { BUILT_IN_CATEGORIES, STORE_PLAN_CATEGORY_ORDER } from '../types';
 import { useGroceryStore } from '../state/useGroceryStore';
+import { useFamilyStore } from '../state/useFamilyStore';
 import { getListMeta, yjsSweepExpiredClaims } from '../sync/yjs-adapter';
 import type { RootStackParamList } from '../navigation/deepLinks';
 import AddItemSheet from './AddItemSheet';
 import FlyerScanFlow from '../components/FlyerScanFlow';
 import StopOptimizer from '../components/StopOptimizer';
+import ImportChecklistSheet from '../components/ImportChecklistSheet';
+import type { ImportedItem } from '../import/checklist-import';
 import UndoToast from '../components/UndoToast';
-import { usePriceStore } from '../pricing/price-store';
+import { usePriceStore, effectiveWindow } from '../pricing/price-store';
 import { useThemeStore, useActiveTheme } from '../state/useThemeStore';
-import { computeStopProposals } from '../pricing/stop-optimizer';
+import { planBasket } from '../pricing/basket-planner';
+import { itemPriceInfo, coverageLabel, money } from '../pricing/plan-display';
 import { flippDealsAdapter } from '../pricing/flipp-deals-adapter';
 import { crowdsourcedAdapter } from '../pricing/crowdsourced';
 import { getSettings, updateSettings } from '../config/settings';
@@ -50,8 +53,6 @@ import SyncIndicator from '../components/SyncIndicator';
 import ItemRow from '../components/ItemRow';
 import CategoryHeader from '../components/CategoryHeader';
 import GotItHeader from '../components/GotItHeader';
-import StoreTotalBar from '../components/StoreTotalBar';
-import type { StoreTotal } from '../components/StoreTotalBar';
 import { themeColors } from '../components/groceryTheme';
 import {
   useEntitlementStore,
@@ -145,21 +146,25 @@ export default function GroceryListScreen({ route, navigation }: Props) {
   }, []);
 
   // Price store
-  const prices = usePriceStore((s) => s.prices);
   const priceLoading = usePriceStore((s) => s.isLoading);
   const itemLoading = usePriceStore((s) => s.itemLoading);
   const loadPricesForAllStores = usePriceStore((s) => s.loadPricesForAllStores);
   const perStorePrices = usePriceStore((s) => s.perStorePrices);
-  const getStoreIdsWithPrices = usePriceStore((s) => s.getStoreIdsWithPrices);
   const isRefreshingPrices = usePriceStore((s) => s.isRefreshing);
   const refreshAllPrices = usePriceStore((s) => s.refreshAllPrices);
   const priceTimestamps = usePriceStore((s) => s.priceTimestamps);
-  const isPriceStale = usePriceStore((s) => s.isPriceStale);
+  const maxStops = usePriceStore((s) => s.maxStops);
+  const setMaxStops = usePriceStore((s) => s.setMaxStops);
+  const shoppingWindow = usePriceStore((s) => s.shoppingWindow);
+  const setShoppingWindow = usePriceStore((s) => s.setShoppingWindow);
+  const memberships = usePriceStore((s) => s.memberships);
+  const setMemberships = usePriceStore((s) => s.setMemberships);
 
   // Local state
   const [searchQuery, setSearchQuery] = useState('');
   const [showAddSheet, setShowAddSheet] = useState(false);
   const [showFlyerScan, setShowFlyerScan] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [listName, setListName] = useState('Grocery List');
   const [gotItExpanded, setGotItExpanded] = useState(false);
   const [toastState, setToastState] = useState<{
@@ -193,50 +198,45 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     return map;
   }, [availableStores]);
 
-  // Filtered unchecked items for stop optimizer
-  const filteredUncheckedItems = useMemo(() => {
-    return Object.values(items)
-      .filter(
-        (i) => !i.isDeleted && i.listId === listId && !i.isChecked,
-      )
-      .filter(
-        (i) =>
-          !searchQuery.trim() ||
-          i.name.toLowerCase().includes(searchQuery.toLowerCase()),
-      );
-  }, [items, listId, searchQuery]);
+  // The minute clock. Offer validity is re-judged on every tick, so a sale
+  // that expires while the screen is open drops out without any list edit.
+  const [clockTick, forceRender] = useState(0);
 
-  const stopProposals = useMemo(
-    () => computeStopProposals(filteredUncheckedItems, perStorePrices, storeNameMap),
-    [filteredUncheckedItems, perStorePrices, storeNameMap],
+  // One plan for every price view: store cards, route cards, the trip sheet,
+  // route sections and row prices all read this, so they cannot disagree.
+  // Every input that changes eligibility is a dependency: item edits (name,
+  // quantity, unit, notes, checked), prices, stop limit, shopping window,
+  // memberships, and the clock.
+  const basketPlan = useMemo(() => {
+    const now = Date.now();
+    const listItems = Object.values(items).filter((i) => !i.isDeleted && i.listId === listId);
+    return planBasket(listItems, perStorePrices, storeNameMap, maxStops, {
+      window: effectiveWindow(shoppingWindow, now),
+      now,
+      memberships,
+    });
+  }, [items, listId, perStorePrices, storeNameMap, maxStops, shoppingWindow, memberships, clockTick]);
+
+  const planWindow = useMemo(
+    () => effectiveWindow(shoppingWindow, Date.now()),
+    [shoppingWindow, clockTick],
   );
 
-  const getItemPrice = useCallback(
-    (itemId: string) => {
-      if (selectedStoreId && perStorePrices[selectedStoreId]?.[itemId]) {
-        return perStorePrices[selectedStoreId][itemId] ?? null;
-      }
-      if (selectedRouteNumStops) {
-        const proposal = stopProposals.find(p => p.numStops === selectedRouteNumStops);
-        if (proposal) {
-          let bestPriceResult: PriceResult | null = null;
-          let cheapestPrice = Infinity;
-          for (const s of proposal.stores) {
-            const pr = perStorePrices[s.storeId]?.[itemId];
-            if (pr && pr.price < cheapestPrice) {
-              cheapestPrice = pr.price;
-              bestPriceResult = pr;
-            }
-          }
-          if (bestPriceResult) return bestPriceResult;
-        }
-      }
-      return prices[itemId] ?? null;
-    },
-    [selectedStoreId, selectedRouteNumStops, perStorePrices, prices, stopProposals],
+  const selectedRoute = useMemo(
+    () => (selectedRouteNumStops ? basketPlan.proposals.find((p) => p.stores.length === selectedRouteNumStops) ?? null : null),
+    [basketPlan, selectedRouteNumStops],
   );
 
-  const [, forceRender] = useState(0);
+  // A route can vanish when an edit changes the plan; drop the stale selection.
+  useEffect(() => {
+    if (selectedRouteNumStops && !selectedRoute) setSelectedRouteNumStops(null);
+  }, [selectedRouteNumStops, selectedRoute]);
+
+  const getItemPriceInfo = useCallback(
+    (itemId: string) => itemPriceInfo(basketPlan, itemId, { storeId: selectedStoreId, route: selectedRoute }),
+    [basketPlan, selectedStoreId, selectedRoute],
+  );
+
   useEffect(() => {
     const timer = setInterval(() => {
       // Actually release claims past the 30-min expiry (syncs to the family
@@ -283,6 +283,18 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     }).catch(err => console.warn('[stores] Failed to load stores:', err));
   }, []);
 
+  // Name each item was last looked up under: a rename must re-query, or the
+  // old product's price would keep standing in for the new one.
+  const queriedNames = useRef<Record<string, string>>({});
+  const itemNamesKey = useMemo(
+    () => Object.values(items)
+      .filter((item) => !item.isDeleted && item.listId === listId)
+      .map((item) => `${item.id}\u0000${item.name}`)
+      .sort()
+      .join('\n'),
+    [items, listId],
+  );
+
   useEffect(() => {
     const storeIds = availableStores.map(s => s.storeId);
     if (storeIds.length === 0 || !items || Object.keys(items).length === 0) return;
@@ -292,15 +304,16 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     const FRESHNESS_THRESHOLD = 60 * 60 * 1000;
     const staleItems = visibleItems.filter((item) => {
       const ts = priceTimestamps[item.id];
-      return !ts || Date.now() - ts > FRESHNESS_THRESHOLD;
+      return !ts || Date.now() - ts > FRESHNESS_THRESHOLD || queriedNames.current[item.id] !== item.name;
     });
     if (staleItems.length > 0) {
+      for (const item of staleItems) queriedNames.current[item.id] = item.name;
       loadPricesForAllStores(
         staleItems.map((item) => ({ id: item.id, name: item.name })),
         storeIds,
       ).catch(err => console.warn('[prices] loadPricesForAllStores failed:', err));
     }
-  }, [Object.keys(items).length, listId, loadPricesForAllStores, isFocused, availableStores]);
+  }, [itemNamesKey, listId, loadPricesForAllStores, isFocused, availableStores]);
 
   // Available categories from items
   const availableCategories = useMemo(() => {
@@ -369,40 +382,6 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     return sections;
   }, [items, listId, searchQuery, gotItExpanded, activeCategory]);
 
-  // Store totals
-  const storeTotals = useMemo(() => {
-    const allItems = Object.values(items).filter(
-      (item) => !item.isDeleted && item.listId === listId && !item.isChecked,
-    );
-    const storeIds = getStoreIdsWithPrices();
-    const totals: StoreTotal[] = [];
-
-    for (const storeId of storeIds) {
-      const storePrices = perStorePrices[storeId];
-      if (!storePrices) continue;
-
-      let total = 0;
-      let hasPrice = false;
-      for (const item of allItems) {
-        const priceResult = storePrices[item.id];
-        if (priceResult) {
-          total += priceResult.price * item.quantity;
-          hasPrice = true;
-        }
-      }
-      if (hasPrice) {
-        totals.push({
-          storeId,
-          storeName: storeNameMap[storeId] ?? storeId,
-          total,
-        });
-      }
-    }
-
-    totals.sort((a, b) => a.total - b.total);
-    return totals;
-  }, [items, listId, perStorePrices, getStoreIdsWithPrices]);
-
   // Store-plan sections
   const storePlanSections = useMemo(() => {
     if (!selectedStoreId) return null;
@@ -452,75 +431,39 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     return sections;
   }, [items, listId, searchQuery, gotItExpanded, selectedStoreId]);
 
-  // Route-plan sections
+  // Route-plan sections — straight from the selected route of the plan.
   const routePlanSections = useMemo(() => {
-    if (!selectedRouteNumStops) return null;
-    const proposal = stopProposals.find(p => p.numStops === selectedRouteNumStops);
-    if (!proposal) return null;
-
-    const routeStores = proposal.stores;
-    const storeIds = routeStores.map(s => s.storeId);
+    if (!selectedRoute) return null;
 
     const allItems = Object.values(items).filter(
       (item) => !item.isDeleted && item.listId === listId,
     );
-
     const filtered = searchQuery.trim()
       ? allItems.filter((item) =>
           item.name.toLowerCase().includes(searchQuery.toLowerCase()),
         )
       : allItems;
-
-    const unchecked = filtered.filter((item) => !item.isChecked);
+    const byId = new Map(filtered.map((i) => [i.id, i]));
     const checked = filtered.filter((item) => item.isChecked);
 
-    const storeGroups: Record<string, GroceryItem[]> = {};
-    const storeSubtotals: Record<string, number> = {};
-
-    for (const storeId of storeIds) {
-      storeGroups[storeId] = [];
-      storeSubtotals[storeId] = 0;
-    }
-    const fallbackGroup: GroceryItem[] = [];
-
-    for (const item of unchecked) {
-      let bestStoreId: string | null = null;
-      let cheapestPrice = Infinity;
-
-      for (const storeId of storeIds) {
-        const pr = perStorePrices[storeId]?.[item.id];
-        if (pr && pr.price < cheapestPrice) {
-          cheapestPrice = pr.price;
-          bestStoreId = storeId;
-        }
-      }
-
-      if (bestStoreId) {
-        storeGroups[bestStoreId].push(item);
-        storeSubtotals[bestStoreId] += cheapestPrice * item.quantity;
-      } else {
-        fallbackGroup.push(item);
-      }
-    }
-
     const sections: ListSection[] = [];
-
-    routeStores.forEach((store, idx) => {
-      const data = storeGroups[store.storeId];
-      if (data && data.length > 0) {
-        sections.push({
-          title: `Stop ${idx + 1}: ${store.storeName}`,
-          data,
-          subtotal: storeSubtotals[store.storeId],
-        });
+    const placed = new Set<string>();
+    selectedRoute.stores.forEach((store, idx) => {
+      const data = store.itemIds.map((id) => byId.get(id)).filter((i): i is GroceryItem => !!i);
+      data.forEach((i) => placed.add(i.id));
+      if (data.length > 0) {
+        sections.push({ title: `Stop ${idx + 1}: ${store.storeName}`, data, subtotal: store.subtotal });
       }
     });
 
-    if (fallbackGroup.length > 0) {
-      sections.push({
-        title: 'Other Items (No Prices)',
-        data: fallbackGroup,
-      });
+    const missing = new Set(selectedRoute.missingItemIds);
+    const notOnRoute = filtered.filter((i) => !i.isChecked && !placed.has(i.id) && missing.has(i.id));
+    if (notOnRoute.length > 0) {
+      sections.push({ title: 'Not available on this route', data: notOnRoute });
+    }
+    const held = filtered.filter((i) => !i.isChecked && !placed.has(i.id) && !missing.has(i.id));
+    if (held.length > 0) {
+      sections.push({ title: 'Held — not compared (see reason)', data: held });
     }
 
     if (checked.length > 0) {
@@ -531,7 +474,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     }
 
     return sections;
-  }, [items, listId, searchQuery, gotItExpanded, selectedRouteNumStops, stopProposals, perStorePrices]);
+  }, [items, listId, searchQuery, gotItExpanded, selectedRoute]);
 
   // Flyer scan needs price lookups on. Rather than hide the icon (making the
   // feature undiscoverable), show it always and present the price opt-in
@@ -693,6 +636,38 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     [reorderItem, listId],
   );
 
+  // Add the lines confirmed in the import preview, in order, after the
+  // current last item. Duplicates were already resolved in the preview.
+  const activeMemberId = useFamilyStore((s) => s.activeMemberId);
+  const familyMembers = useFamilyStore((s) => s.members);
+  const handleImport = useCallback(async (imported: ImportedItem[]) => {
+    const { addItem, items: current } = useGroceryStore.getState();
+    const listItems = Object.values(current).filter((i) => i.listId === listId);
+    const familyId = listItems[0]?.familyId ?? Object.values(familyMembers)[0]?.familyId ?? '';
+    let sortOrder = listItems.length > 0 ? Math.max(...listItems.map((i) => i.sortOrder)) : 0;
+    for (const it of imported) {
+      await addItem({
+        listId,
+        familyId,
+        name: it.name,
+        quantity: it.quantity,
+        unit: it.unit,
+        ...(it.notes ? { notes: it.notes } : {}),
+        category: 'other',
+        isChecked: it.isChecked,
+        addedBy: activeMemberId ?? 'unknown',
+        sortOrder: ++sortOrder,
+      });
+    }
+  }, [listId, activeMemberId, familyMembers]);
+
+  const importExistingItems = useMemo(
+    () => Object.values(items)
+      .filter((i) => i.listId === listId)
+      .map((i) => ({ id: i.id, name: i.name, isChecked: i.isChecked, isDeleted: i.isDeleted })),
+    [items, listId],
+  );
+
   const handleSettings = useCallback(() => {
     navigation.navigate('Settings');
   }, [navigation]);
@@ -785,9 +760,6 @@ export default function GroceryListScreen({ route, navigation }: Props) {
   }, [activeTab, navigation]);
 
   const hasPrices = Object.keys(priceTimestamps).length > 0;
-  const hasStalePrices = Object.values(items)
-    .filter((item) => !item.isDeleted && item.listId === listId)
-    .some((item) => isPriceStale(item.id));
 
   if (isLoading) {
     return (
@@ -984,6 +956,15 @@ export default function GroceryListScreen({ route, navigation }: Props) {
               <Ionicons name="camera-outline" size={22} color={theme.text} />
             </TouchableOpacity>
           )}
+          <TouchableOpacity
+            onPress={() => setShowImport(true)}
+            style={styles.settingsBtn}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Import a checklist"
+          >
+            <Ionicons name="clipboard-outline" size={22} color={theme.text} />
+          </TouchableOpacity>
           <TouchableOpacity onPress={handleSettings} style={styles.settingsBtn} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel="Settings">
             <Ionicons name="settings-outline" size={22} color={theme.text} />
           </TouchableOpacity>
@@ -995,21 +976,28 @@ export default function GroceryListScreen({ route, navigation }: Props) {
           {/* Search bar */}
           <SearchBar value={searchQuery} onChangeText={setSearchQuery} placeholder="Search groceries..." />
 
-          {/* Store card row — horizontal scroll */}
-          {(storeTotals.length > 0 || availableStores.length > 0) && (
+          {/* Store card row — each card states how much of the basket the
+              store covers; an incomplete store is never shown as cheapest. */}
+          {(basketPlan.storeCoverage.length > 0 || availableStores.length > 0) && (
             <View style={styles.storeCardRow}>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.storeCardScroll}
               >
-                {storeTotals.length > 0 ? storeTotals.map((st) => (
+                {(basketPlan.storeCoverage.length > 0
+                  ? basketPlan.storeCoverage
+                  : availableStores.map((s) => ({ storeId: s.storeId, storeName: s.storeName, subtotal: null as number | null, coveredItemIds: [] as string[], eligibleCount: 0, complete: false, evidence: null }))
+                ).map((st) => (
                   <StoreCard
                     key={st.storeId}
                     storeName={st.storeName}
                     storeId={st.storeId}
-                    total={st.total}
-                    itemCount={Object.values(items).filter(i => !i.isDeleted && i.listId === listId && !i.isChecked).length}
+                    subtotal={st.subtotal}
+                    coveredCount={st.coveredItemIds.length}
+                    eligibleCount={st.eligibleCount}
+                    complete={st.complete}
+                    sampleOnly={!!st.evidence && st.evidence.demo > 0 && st.evidence.demo === st.coveredItemIds.length}
                     isSelected={selectedStoreId === st.storeId}
                     onPress={() => {
                       if (selectedStoreId === st.storeId) {
@@ -1020,25 +1008,13 @@ export default function GroceryListScreen({ route, navigation }: Props) {
                       }
                     }}
                   />
-                )) : availableStores.map((s) => (
-                  <StoreCard
-                    key={s.storeId}
-                    storeName={s.storeName}
-                    storeId={s.storeId}
-                    total={0}
-                    itemCount={Object.values(items).filter(i => !i.isDeleted && i.listId === listId && !i.isChecked).length}
-                    isSelected={selectedStoreId === s.storeId}
-                    onPress={() => {
-                      if (selectedStoreId === s.storeId) {
-                        setSelectedStoreId(null);
-                      } else {
-                        setSelectedStoreId(s.storeId);
-                        setSelectedRouteNumStops(null);
-                      }
-                    }}
-                  />
                 ))}
               </ScrollView>
+              {basketPlan.eligibleItemIds.length > 0 && !basketPlan.storeCoverage.some((c) => c.complete) && (
+                <Text style={[styles.coverageWarning, { color: theme.secondaryText }]}>
+                  No single store has every item — totals are partial ({coverageLabel(basketPlan.storeCoverage[0]?.coveredItemIds.length ?? 0, basketPlan.eligibleItemIds.length)} at best).
+                </Text>
+              )}
             </View>
           )}
 
@@ -1068,20 +1044,20 @@ export default function GroceryListScreen({ route, navigation }: Props) {
               paid), computed solely by src/config/entitlements.ts. */}
           {TRIP_OPTIMIZER_ENABLED && isPlus && (
             <StopOptimizer
-              items={filteredUncheckedItems}
-              perStorePrices={perStorePrices}
-              storeNameMap={storeNameMap}
+              plan={basketPlan}
+              window={planWindow}
+              maxStops={maxStops}
+              onChangeMaxStops={setMaxStops}
+              onChangeWindow={setShoppingWindow}
+              memberships={memberships}
+              onToggleMembership={(m) =>
+                setMemberships(memberships.includes(m) ? memberships.filter((x) => x !== m) : [...memberships, m])
+              }
               selectedRouteNumStops={selectedRouteNumStops}
               onSelectRouteNumStops={(numStops) => {
                 setSelectedRouteNumStops(numStops);
                 setSelectedStoreId(null);
               }}
-              fullItems={filteredUncheckedItems.map((item) => ({
-                id: item.id,
-                name: item.name,
-                quantity: item.quantity,
-                unit: item.unit,
-              }))}
             />
           )}
 
@@ -1114,12 +1090,14 @@ export default function GroceryListScreen({ route, navigation }: Props) {
 
           {/* Price summary banner */}
           {priceSummaryItem && (() => {
-            const priceEntries = availableStores
-              .map((store) => {
-                const pr = perStorePrices[store.storeId]?.[priceSummaryItem.id];
-                return pr ? `${store.storeName} $${pr.price.toFixed(2)}` : null;
-              })
-              .filter(Boolean);
+            // Every store's offer for this line, with what it costs for the
+            // listed quantity — or the reason it can't be used.
+            const analysis = basketPlan.lines.find((l) => l.line.itemId === priceSummaryItem.id);
+            const priceEntries = (analysis?.candidates ?? []).map((c) =>
+              c.verdict === 'excluded'
+                ? `${c.storeName}: ✕ ${c.reasons[0] ?? 'not usable'}`
+                : `${c.storeName} ${money(c.lineTotal ?? 0)}${c.verdict === 'substitute' ? ' (substitute)' : ''}`,
+            );
             return (
               <View style={[styles.priceSummaryBanner, {
                 backgroundColor: isDark ? 'rgba(255, 255, 255, 0.06)' : '#FFFFFF',
@@ -1129,8 +1107,8 @@ export default function GroceryListScreen({ route, navigation }: Props) {
                   {priceSummaryItem.name}
                 </Text>
                 {priceEntries.length > 0 ? (
-                  <Text style={[styles.priceSummaryText, { color: theme.secondaryText }]} numberOfLines={2}>
-                    {priceEntries.join('  ·  ')}
+                  <Text style={[styles.priceSummaryText, { color: theme.secondaryText }]} numberOfLines={6}>
+                    {priceEntries.join('\n')}
                   </Text>
                 ) : (
                   <Text style={[styles.priceSummaryText, { color: theme.secondaryText }]}>
@@ -1197,7 +1175,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
                         onLongPress={handleItemLongPress}
                         isFirst={index === 0}
                         isLast={index === section.data.length - 1}
-                        price={getItemPrice(item.id)}
+                        priceInfo={getItemPriceInfo(item.id)}
                         priceLoading={itemLoading[item.id] ?? false}
                         onQuantityChange={handleQuantityChange}
                       />
@@ -1213,7 +1191,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
                       onMoveDown={isStorePlan ? undefined : handleMoveDown}
                       isFirst={index === 0}
                       isLast={index === section.data.length - 1}
-                      price={getItemPrice(item.id)}
+                      priceInfo={getItemPriceInfo(item.id)}
                       priceLoading={itemLoading[item.id] ?? false}
                       onQuantityChange={handleQuantityChange}
                     />
@@ -1289,6 +1267,14 @@ export default function GroceryListScreen({ route, navigation }: Props) {
           setShowAddSheet(false);
           setActiveTab('lists');
         }}
+      />
+
+      {/* Checklist import — paste, review, then add */}
+      <ImportChecklistSheet
+        visible={showImport}
+        existingItems={importExistingItems}
+        onClose={() => setShowImport(false)}
+        onImport={handleImport}
       />
 
       {/* Flyer Scan Flow (AI price extraction via relay) */}
@@ -1370,6 +1356,11 @@ const styles = StyleSheet.create({
   },
   storeCardRow: {
     paddingVertical: 8,
+  },
+  coverageWarning: {
+    fontSize: 11,
+    paddingHorizontal: 16,
+    paddingTop: 4,
   },
   storeCardScroll: {
     paddingHorizontal: 16,

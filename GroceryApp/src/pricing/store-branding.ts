@@ -2,7 +2,7 @@
  * store-branding — Shared store logo, color, and initial helpers.
  *
  * Single source of truth for store visuals used by StoreCard,
- * TripPlanSheet, StoreTotalBar, and any future component.
+ * TripPlanSheet, and any future component.
  *
  * Supports Turso-backed branding with static fallback.
  */

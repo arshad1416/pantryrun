@@ -1,6 +1,8 @@
 /**
  * StoreCard — Horizontal scroll card for store selection.
- * Shows store name + total price. Selected card has green glow/highlight.
+ * Shows store name, the subtotal for the items this store can supply, and
+ * how many of the basket's items that is. A store that cannot supply the
+ * whole basket is labelled "partial" — its subtotal is not a basket total.
  */
 
 import React from 'react';
@@ -12,8 +14,13 @@ import { getStoreColor, getStoreInitial, getStoreLogo } from '../pricing/store-b
 interface StoreCardProps {
   storeName: string;
   storeId: string;
-  total: number;
-  itemCount: number;
+  /** Subtotal of the covered items; null when no prices are loaded yet. */
+  subtotal: number | null;
+  coveredCount: number;
+  eligibleCount: number;
+  complete: boolean;
+  /** Every price behind this subtotal is sample data. */
+  sampleOnly?: boolean;
   isSelected: boolean;
   onPress: () => void;
 }
@@ -22,8 +29,11 @@ interface StoreCardProps {
 export default function StoreCard({
   storeName,
   storeId,
-  total,
-  itemCount,
+  subtotal,
+  coveredCount,
+  eligibleCount,
+  complete,
+  sampleOnly = false,
   isSelected,
   onPress,
 }: StoreCardProps) {
@@ -82,11 +92,19 @@ export default function StoreCard({
         {storeName}
       </Text>
       <Text style={[styles.total, { color: isSelected ? theme.primary : theme.secondaryText }]}>
-        ${total.toFixed(2)}
+        {subtotal == null ? 'No prices yet' : `$${subtotal.toFixed(2)}`}
       </Text>
-      <Text style={[styles.itemCount, { color: theme.secondaryText }]}>
-        {itemCount} item{itemCount !== 1 ? 's' : ''}
-      </Text>
+      {subtotal != null && (
+        <Text
+          style={[styles.itemCount, { color: complete ? theme.secondaryText : theme.unassignedText }]}
+          accessibilityLabel={`${coveredCount} of ${eligibleCount} items${complete ? '' : ', partial total'}`}
+        >
+          {coveredCount} of {eligibleCount} item{eligibleCount !== 1 ? 's' : ''}{complete ? '' : ' · partial'}
+        </Text>
+      )}
+      {sampleOnly && (
+        <Text style={[styles.itemCount, { color: theme.unassignedText }]}>sample prices</Text>
+      )}
     </TouchableOpacity>
   );
 }

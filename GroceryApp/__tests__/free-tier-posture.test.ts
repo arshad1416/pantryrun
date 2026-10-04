@@ -164,12 +164,11 @@ describe('Trip Optimizer ships ON behind the Plus entitlement', () => {
 
   it('the implementation and its tests are kept, not deleted', () => {
     for (const rel of [
-      'src/pricing/stop-optimizer.ts',
-      'src/pricing/trip-plan.ts',
+      'src/pricing/basket-planner.ts',
       'src/components/StopOptimizer.tsx',
       'src/components/TripPlanSheet.tsx',
-      '__tests__/stop-optimizer.test.ts',
-      '__tests__/trip-plan.test.ts',
+      '__tests__/basket-planner.test.ts',
+      '__tests__/planner-oracle.test.ts',
     ]) {
       expect(fs.existsSync(path.join(APP_ROOT, rel))).toBe(true);
     }

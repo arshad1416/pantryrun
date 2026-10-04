@@ -45,14 +45,16 @@ export const PLUS_PRICE_DISPLAY = '$14.99/year';
 
 /**
  * Paywall copy. States precisely what the savings figure compares against:
- * trip-plan.ts computes savings as the best single-store trip minus the
- * optimized multi-stop total (one-stop baseline, floored at 0).
+ * basket-planner.ts compares routes of one, two or three stores that buy the
+ * SAME items, merchandise only (tax, travel and fees are not included), and
+ * states no saving when the routes cover different items.
  */
 export const PLUS_PAYWALL_COPY =
-  'PantryRun Plus unlocks the Trip Optimizer: the cheapest way to split ' +
-  'your list across nearby stores, with savings shown against doing the ' +
-  'whole trip at the cheapest single store. One purchase unlocks your ' +
-  `whole family. ${PLUS_PRICE_DISPLAY}.`;
+  'PantryRun Plus unlocks the Trip Optimizer: compare splitting your list ' +
+  'across up to three nearby stores, using the prices you have, with every ' +
+  'route showing which items it covers and where each price came from. ' +
+  'Savings are merchandise-only, before tax and travel. One purchase ' +
+  `unlocks your whole family. ${PLUS_PRICE_DISPLAY}.`;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

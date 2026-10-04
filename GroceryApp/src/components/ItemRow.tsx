@@ -12,7 +12,7 @@ import {
   Animated,
 } from 'react-native';
 import type { GroceryItem } from '../types';
-import type { PriceResult } from '../pricing/types';
+import type { ItemPriceInfo } from '../pricing/plan-display';
 import { emojiForItem } from '../pricing/emoji-map';
 import { useActiveTheme } from '../state/useThemeStore';
 import { themeColors } from './groceryTheme';
@@ -29,7 +29,8 @@ export interface ItemRowProps {
   onMoveDown?: (id: string) => void;
   isFirst: boolean;
   isLast: boolean;
-  price?: PriceResult | null;
+  /** What this line costs in the current view, or why it is held. */
+  priceInfo?: ItemPriceInfo | null;
   priceLoading?: boolean;
   onClaim?: (id: string) => void;
   onUnclaim?: (id: string) => void;
@@ -48,7 +49,7 @@ const ItemRow = memo(function ItemRow({
   onMoveDown,
   isFirst,
   isLast,
-  price,
+  priceInfo,
   priceLoading,
   onQuantityChange,
 }: ItemRowProps) {
@@ -201,10 +202,18 @@ const ItemRow = memo(function ItemRow({
         )}
 
         {/* Price */}
-        {price && !priceLoading ? (
+        {priceInfo && !priceLoading ? (
           <View style={styles.priceContainer}>
-            <Text style={[styles.priceText, { color: theme.primary }]}>
-              ${price.price.toFixed(2)}
+            {priceInfo.amount != null && (
+              <Text style={[styles.priceText, { color: priceInfo.tone === 'ok' ? theme.primary : theme.warning }]}>
+                ${priceInfo.amount.toFixed(2)}
+              </Text>
+            )}
+            <Text
+              style={[styles.priceCaption, { color: priceInfo.tone === 'held' ? theme.warning : theme.secondaryText }]}
+              numberOfLines={2}
+            >
+              {priceInfo.caption}
             </Text>
           </View>
         ) : null}
@@ -300,6 +309,11 @@ const styles = StyleSheet.create({
   priceContainer: {
     alignItems: 'flex-end',
     minWidth: 50,
+    maxWidth: 140,
+  },
+  priceCaption: {
+    fontSize: 10,
+    textAlign: 'right',
   },
   priceText: {
     fontSize: 14,

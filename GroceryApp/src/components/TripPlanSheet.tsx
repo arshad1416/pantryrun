@@ -1,12 +1,13 @@
 /**
- * TripPlanSheet — bottom sheet showing the optimized trip plan.
+ * TripPlanSheet — bottom sheet for one route of a BasketPlan.
  *
  * Displays:
- *  - Per-stop sections: store name, items with prices, subtotal
- *  - Total row with savings vs. the best single-store trip (plan.savings
- *    from trip-plan.ts — one-stop baseline, same as stop-optimizer's
- *    savingsVsOneStop; floored at 0)
- *  - "Unassigned" section for items without prices
+ *  - Per-stop sections: each line with what to buy (packs × size or weight),
+ *    its line total, source, and any date/stock restriction; stop subtotal
+ *  - Lines this route cannot buy, and lines held out of the comparison, each
+ *    with its reason — nothing is silently priced at $0
+ *  - Merchandise total, labelled as excluding tax, travel, delivery fees and
+ *    memberships; savings only when the compared routes cover the same lines
  */
 
 import React, { useRef } from 'react';
@@ -22,13 +23,17 @@ import {
   Dimensions,
 } from 'react-native';
 import { useActiveTheme } from '../state/useThemeStore';
-import type { TripPlan } from '../pricing/trip-plan';
+import type { BasketPlan, RouteProposal } from '../pricing/basket-planner';
+import type { ShoppingWindow } from '../pricing/offer-evidence';
+import { coverageLabel, money, provenanceLabel, savingsStatement, windowLabel } from '../pricing/plan-display';
 import { navigateToStore } from '../utils/storeNavigation';
 import { StoreLogo } from '../pricing/store-branding';
 
 interface TripPlanSheetProps {
   visible: boolean;
-  plan: TripPlan | null;
+  route: RouteProposal | null;
+  plan: BasketPlan;
+  window: ShoppingWindow;
   onClose: () => void;
 }
 
@@ -36,7 +41,9 @@ import { themeColors } from './groceryTheme';
 
 export default function TripPlanSheet({
   visible,
+  route,
   plan,
+  window,
   onClose,
 }: TripPlanSheetProps) {
   const activeTheme = useActiveTheme();
@@ -69,7 +76,12 @@ export default function TripPlanSheet({
     }),
   ).current;
 
-  if (!plan) return null;
+  if (!route) return null;
+
+  const idx = plan.proposals.indexOf(route);
+  const saving = savingsStatement(route, idx > 0 ? plan.proposals[idx - 1] : undefined);
+  const nameOf = (id: string) => plan.lines.find((l) => l.line.itemId === id)?.line.displayName ?? id;
+  const numStops = route.stores.length;
 
   return (
     <Modal
@@ -91,7 +103,7 @@ export default function TripPlanSheet({
                 🗺️ Trip Plan
               </Text>
               <Text style={[styles.headerSubtitle, { color: theme.secondaryText }]}>
-                {plan.numStops} {plan.numStops === 1 ? 'stop' : 'stops'}
+                {numStops} {numStops === 1 ? 'stop' : 'stops'} · {coverageLabel(route.coveredItemIds.length, plan.eligibleItemIds.length)} · {windowLabel(window)}
               </Text>
             </View>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
@@ -107,91 +119,91 @@ export default function TripPlanSheet({
             showsVerticalScrollIndicator={false}
           >
             {/* Stops */}
-            {plan.stops.map((stop, idx) => (
-              <View
-                key={stop.storeId}
-                style={[
-                  styles.stopCard,
-                  {
-                    backgroundColor: theme.stopBg,
-                    borderColor: theme.border,
-                  },
-                ]}
-              >
-                <View style={styles.stopHeader}>
-                  <Text style={[styles.stopLabel, { color: theme.primary }]}>
-                    Stop {idx + 1}
-                  </Text>
-                  <TouchableOpacity onPress={() => navigateToStore(stop.storeName)} style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                    <StoreLogo storeId={stop.storeId} size={24} />
-                    <Text style={[styles.stopStore, { color: theme.primary, marginLeft: 6 }]}>
-                      {stop.storeName}
-                    </Text>
-                    <Text style={{ fontSize: 14, marginLeft: 4, color: theme.primary }}>📍</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {stop.items.map((item, itemIdx) => (
-                  <View
-                    key={item.itemId}
-                    style={[
-                      styles.itemRow,
-                      itemIdx < stop.items.length - 1 && {
-                        borderBottomColor: theme.divider,
-                        borderBottomWidth: StyleSheet.hairlineWidth,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[styles.itemName, { color: theme.text }]}
-                      numberOfLines={1}
-                    >
-                      {item.itemName}
-                      {item.quantity > 1 ? ` ×${item.quantity}` : ''}
-                    </Text>
-                    <Text style={[styles.itemPrice, { color: theme.text }]}>
-                      ${(item.price * item.quantity).toFixed(2)}
-                    </Text>
-                  </View>
-                ))}
-
+            {route.stores.map((stop, stopIdx) => {
+              const lines = route.assignments.filter((a) => a.candidate.storeId === stop.storeId);
+              return (
                 <View
-                  style={[
-                    styles.subtotalRow,
-                    { borderTopColor: theme.divider, backgroundColor: theme.subtotalBg },
-                  ]}
+                  key={stop.storeId}
+                  style={[styles.stopCard, { backgroundColor: theme.stopBg, borderColor: theme.border }]}
                 >
-                  <Text style={[styles.subtotalLabel, { color: theme.secondaryText }]}>
-                    Subtotal
-                  </Text>
-                  <Text style={[styles.subtotalValue, { color: theme.text }]}>
-                    ${stop.subtotal.toFixed(2)}
-                  </Text>
-                </View>
-              </View>
-            ))}
+                  <View style={styles.stopHeader}>
+                    <Text style={[styles.stopLabel, { color: theme.primary }]}>
+                      Stop {stopIdx + 1}
+                    </Text>
+                    <TouchableOpacity onPress={() => navigateToStore(stop.storeName)} style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                      <StoreLogo storeId={stop.storeId} size={24} />
+                      <Text style={[styles.stopStore, { color: theme.primary, marginLeft: 6 }]}>
+                        {stop.storeName}
+                      </Text>
+                      <Text style={{ fontSize: 14, marginLeft: 4, color: theme.primary }}>📍</Text>
+                    </TouchableOpacity>
+                  </View>
 
-            {/* Unassigned */}
-            {plan.unassigned.length > 0 && (
-              <View
-                style={[
-                  styles.unassignedCard,
-                  {
-                    backgroundColor: theme.unassignedBg,
-                    borderColor: theme.unassignedBorder,
-                  },
-                ]}
-              >
+                  {lines.map((a, i) => {
+                    const c = a.candidate;
+                    const notes = [
+                      c.purchaseDescription,
+                      provenanceLabel(c.provenance),
+                      c.verdict === 'substitute' ? `substitute: ${c.reasons.join('; ')}` : '',
+                      c.restriction ?? '',
+                    ].filter(Boolean);
+                    return (
+                      <View
+                        key={a.itemId}
+                        style={[
+                          styles.itemRow,
+                          i < lines.length - 1 && { borderBottomColor: theme.divider, borderBottomWidth: StyleSheet.hairlineWidth },
+                        ]}
+                      >
+                        <View style={styles.itemText}>
+                          <Text style={[styles.itemName, { color: theme.text }]} numberOfLines={1}>
+                            {a.name}
+                          </Text>
+                          <Text
+                            style={[styles.itemNote, { color: c.restriction || c.verdict === 'substitute' || c.provenance === 'demo' ? theme.unassignedText : theme.secondaryText }]}
+                            numberOfLines={2}
+                          >
+                            {notes.join(' · ')}
+                          </Text>
+                        </View>
+                        <Text style={[styles.itemPrice, { color: theme.text }]}>
+                          {money(c.lineTotal ?? 0)}
+                        </Text>
+                      </View>
+                    );
+                  })}
+
+                  <View style={[styles.subtotalRow, { borderTopColor: theme.divider, backgroundColor: theme.subtotalBg }]}>
+                    <Text style={[styles.subtotalLabel, { color: theme.secondaryText }]}>Subtotal</Text>
+                    <Text style={[styles.subtotalValue, { color: theme.text }]}>{money(stop.subtotal)}</Text>
+                  </View>
+                </View>
+              );
+            })}
+
+            {/* Eligible lines this route can't buy */}
+            {route.missingItemIds.length > 0 && (
+              <View style={[styles.unassignedCard, { backgroundColor: theme.unassignedBg, borderColor: theme.unassignedBorder }]}>
                 <Text style={[styles.unassignedTitle, { color: theme.unassignedText }]}>
-                  ⚠️ Items without prices
+                  ⚠️ Not available on this route — total is incomplete
                 </Text>
-                {plan.unassigned.map((item) => (
-                  <Text
-                    key={item.itemId}
-                    style={[styles.unassignedItem, { color: theme.unassignedText }]}
-                  >
-                    • {item.itemName}
-                    {item.quantity > 1 ? ` ×${item.quantity}` : ''}
+                {route.missingItemIds.map((id) => (
+                  <Text key={id} style={[styles.unassignedItem, { color: theme.unassignedText }]}>
+                    • {nameOf(id)}
+                  </Text>
+                ))}
+              </View>
+            )}
+
+            {/* Lines held out of the comparison */}
+            {plan.held.length > 0 && (
+              <View style={[styles.unassignedCard, { backgroundColor: theme.unassignedBg, borderColor: theme.unassignedBorder }]}>
+                <Text style={[styles.unassignedTitle, { color: theme.unassignedText }]}>
+                  Held out of the comparison
+                </Text>
+                {plan.held.map((h) => (
+                  <Text key={h.itemId} style={[styles.unassignedItem, { color: theme.unassignedText }]}>
+                    • {h.name}: {h.reasons.join('; ')}
                   </Text>
                 ))}
               </View>
@@ -201,24 +213,22 @@ export default function TripPlanSheet({
             <View style={[styles.totalCard, { borderColor: theme.border }]}>
               <View style={styles.totalRow}>
                 <Text style={[styles.totalLabel, { color: theme.secondaryText }]}>
-                  Estimated Total
+                  Merchandise total
                 </Text>
                 <Text style={[styles.totalValue, { color: theme.text }]}>
-                  ${plan.totalCost.toFixed(2)}
+                  {money(route.merchandiseTotal)}
                 </Text>
               </View>
-              {plan.savings > 0 && (
-                <View
-                  style={[styles.savingsRow, { backgroundColor: theme.savingsBg }]}
-                >
-                  <Text style={[styles.savingsLabel, { color: theme.savingsText }]}>
-                    💰 You save
-                  </Text>
-                  <Text style={[styles.savingsValue, { color: theme.savingsText }]}>
-                    ${plan.savings.toFixed(2)}
+              {saving && (
+                <View style={[styles.savingsRow, { backgroundColor: route.complete ? theme.savingsBg : theme.unassignedBg }]}>
+                  <Text style={[styles.savingsLabel, { color: route.complete ? theme.savingsText : theme.unassignedText }]}>
+                    {saving}
                   </Text>
                 </View>
               )}
+              {plan.caveats.map((c) => (
+                <Text key={c} style={[styles.caveat, { color: theme.secondaryText }]}>• {c}</Text>
+              ))}
             </View>
           </ScrollView>
 
@@ -312,10 +322,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 6,
   },
-  itemName: {
-    fontSize: 13,
+  itemText: {
     flex: 1,
     marginRight: 12,
+  },
+  itemName: {
+    fontSize: 13,
+  },
+  itemNote: {
+    fontSize: 11,
+    marginTop: 1,
+  },
+  caveat: {
+    fontSize: 11,
+    lineHeight: 15,
+    marginTop: 4,
   },
   itemPrice: {
     fontSize: 13,
@@ -383,13 +404,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   savingsLabel: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
-  },
-  savingsValue: {
-    fontSize: 16,
-    fontWeight: '800',
-    fontVariant: ['tabular-nums'],
+    flex: 1,
   },
   doneBtn: {
     marginHorizontal: 16,
