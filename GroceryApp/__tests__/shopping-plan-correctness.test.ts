@@ -345,6 +345,12 @@ describe('C. quantity math', () => {
     expect(parseRequirement(2, 'handful')).toEqual({ ok: false, reason: 'unit_unknown' });
   });
 
+  it('a crowd "1 bag" price buys bags; "3 bags" for one price is ambiguous', () => {
+    expect(purchaseFor(req(2, 'bag'), simple(1.99, { unit: 'bag', packageSize: 1 })))
+      .toMatchObject({ ok: true, purchase: { costCents: 398, packages: 2 } });
+    expect(purchaseFor(req(2, 'bag'), simple(4.99, { unit: 'bag', packageSize: 3 }))).toEqual({ ok: false, reason: 'pack_size_unknown' });
+  });
+
   it('a shelf unit price is not substituted for the cost of the required packages', () => {
     // "$8.80 /kg" shelf label with no pack size or basis: ambiguous, not costed as 0.5 × 8.80
     expect(purchaseFor(req(500, 'g'), simple(8.8, { unit: 'kg' }))).toEqual({ ok: false, reason: 'pack_size_unknown' });

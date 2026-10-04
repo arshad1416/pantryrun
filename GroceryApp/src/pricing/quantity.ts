@@ -111,6 +111,8 @@ export function offerBasis(pr: PriceResult): OfferBasis {
   }
   if (size !== null) {
     if (unit) return { kind: 'package', dimension: unit[0], content: size * unit[1] };
+    // "1 bag" is one package of unknown content; "3 bags" for one price is unclear.
+    if (isPackageWord(pr.unit) && size === 1) return { kind: 'package', dimension: null, content: null };
     return { kind: 'ambiguous' }; // "4 of what?"
   }
   // No package size.
