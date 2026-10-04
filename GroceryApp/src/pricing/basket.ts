@@ -128,6 +128,19 @@ const ABBREVIATIONS: Record<string, string> = {
   gf: 'gluten free',
 };
 
+/**
+ * Names retailers use for the same product → one canonical phrase, applied
+ * to both the list item and the matched product. Whole phrases only: "mini"
+ * alone is too generic ("mini pretzels") to be a synonym for anything.
+ */
+const PRODUCT_SYNONYMS: [RegExp, string][] = [
+  [/\b(?:mini|baby)[\s-]+carrots?\b/gi, 'baby carrots'],
+];
+
+function canonicaliseProduct(text: string): string {
+  return PRODUCT_SYNONYMS.reduce((out, [re, canonical]) => out.replace(re, canonical), text);
+}
+
 function expandAbbreviations(text: string): { text: string; expanded: string[] } {
   const expanded: string[] = [];
   const out = text.replace(/\b[a-z]{2}\b/gi, (word) => {
@@ -165,7 +178,7 @@ export function parseItemConstraints(item: Pick<BasketItem, 'name' | 'notes'>): 
     name = name.slice(0, purpose.index).trim();
   }
 
-  const { text: expandedName, expanded } = expandAbbreviations(name);
+  const { text: expandedName, expanded } = expandAbbreviations(canonicaliseProduct(name));
   const hardTokens = emphasisedTokens(expandedName);
   const nameTokens = extractKeywords(expandedName);
   for (const t of expanded) if (!hardTokens.includes(t)) hardTokens.push(t);
@@ -237,7 +250,9 @@ export function classifyMatch(
     // but a note's extra requirement can't be verified without a product name.
     return c.noteTokens.length > 0 ? 'unresolved' : 'exact';
   }
-  const product = new Set(extractKeywords(expandAbbreviations(pr.matchedName).text));
+  const product = new Set(
+    extractKeywords(expandAbbreviations(canonicaliseProduct(pr.matchedName)).text),
+  );
   const missing = c.requiredTokens.filter((t) => !product.has(t));
   if (missing.length === 0) return 'exact';
   if (conflicts(c.requiredTokens, product)) return 'rejected';

@@ -139,7 +139,8 @@ const AS_LISTED: Record<string, Record<string, PriceResult>> = {
   'fortinos-waterdown': {
     // No expiry was shown in the live verification — none is assigned here.
     grapes: offer('fortinos-waterdown', 6.59, 'Green seedless grapes', { unit: 'kg', stock: 'in_stock' }),
-    carrots: offer('fortinos-waterdown', 1.29, 'Baby carrots 340 g', { validTo: endOfDay(7) }),
+    // Listed by Fortinos as "Mini Carrots" — a synonym for baby carrots.
+    carrots: offer('fortinos-waterdown', 1.29, 'Mini carrots 340 g', { validTo: endOfDay(7) }),
   },
   costco: {
     gummies: offer('costco', 19.99, 'Elderberry gummies 120 count', { validTo: endOfDay(25) }),

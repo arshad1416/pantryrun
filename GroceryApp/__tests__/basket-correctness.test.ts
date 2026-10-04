@@ -309,6 +309,14 @@ describe('5b. evidence conditions and substitution policy', () => {
     expect(evidenceStatus(price(1, { validTo: NOW - DAY }), NOW)).toBe('expired');
   });
 
+  it('retailer synonyms match: Mini Carrots are baby carrots, but "mini" alone is not', () => {
+    const mini = price(1.29, { matchedName: 'Mini Carrots 340 g' });
+    expect(classifyMatch(mini, { name: 'Baby carrots' })).toBe('exact');
+    expect(classifyMatch(price(1.29, { matchedName: 'Baby-Carrots' }), { name: 'mini carrots' })).toBe('exact');
+    expect(classifyMatch(price(2, { matchedName: 'Mini Pretzels' }), { name: 'baby carrots' })).toBe('unresolved');
+    expect(classifyMatch(price(2, { matchedName: 'Carrots 2 lb' }), { name: 'baby carrots' })).toBe('unresolved');
+  });
+
   it('a cheaper stand-in is only used when the note allows substitutes, never dropping a hard variant', () => {
     const pr = price(2, { matchedName: 'Lactose Free Milk' });
     // Default policy is exact: a missing ordinary word leaves the match unresolved.
