@@ -1,27 +1,30 @@
 /**
- * Trip Plan — Optimal multi-stop shopping plan.
+ * Trip Plan — the optimal shopping plan over at most `maxStops` stores,
+ * shaped for TripPlanSheet.
  *
- * Exact enumeration for ≤7 stores (2^7 = 128 subsets), greedy fallback
- * for larger sets. Pure on-device, <5ms for typical lists.
+ * All decisions are basket.ts's: eligibility on the shopping date, package
+ * and weighed-goods math, the exact bounded-store solver, holds for "sale
+ * only" items, and honest savings. This module only reshapes a BasketPlan
+ * into stops and line rows.
  *
- * Plans are compared coverage-first (basket.ts `isBetterPlan`): a candidate
- * that assigns more items always beats one that assigns fewer, and cost
- * breaks ties. Line costs come from basket.ts `lineCost`, so measured
- * quantities are bought in whole packages.
- *
- * `savings` is the one-stop baseline: the cost of the best single-store
- * trip minus the optimized total. It is only reported when the baseline
- * covers exactly the same items (`savingsComparable`); otherwise it is 0
- * and the UI must say the trips aren't comparable.
+ * `savings` is merchandise savings against the best single-store trip,
+ * computed from the same analysis. It is null (unavailable — not $0)
+ * whenever that baseline doesn't cost exactly the same lines.
  */
 
 import type { PriceResult } from './types';
 import {
-  comparableSavings,
+  analyzeBasket,
+  compareSavings,
   describeEvidence,
-  evaluateStores,
-  isBetterPlan,
+  solvePlan,
   type BasketItem,
+  type BasketPlan,
+  type Fulfillment,
+  type PlanClaim,
+  type PlanContext,
+  type PlanLine,
+  type StoreOffers,
 } from './basket';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -29,15 +32,22 @@ import {
 export interface TripPlanItem {
   itemId: string;
   itemName: string;
-  quantity: number;
-  price: number;
+  quantity: number | null;
+  /** Offer price; null when the line isn't costed (never coerced to 0). */
+  price: number | null;
   unit: string;
-  /** What this line costs (whole packages); 0 when unassigned. */
-  lineTotal: number;
-  /** Quantity couldn't be reconciled with the price's unit — one package assumed. */
-  quantityAssumed?: boolean;
-  /** Where the price came from, e.g. "Flyer · ends Oct 9" (assigned items only) */
+  /** What this line costs; null when not costed. */
+  lineTotal: number | null;
+  /** Where the price came from, e.g. "Flyer · ends Oct 9" (costed lines) */
   evidence?: string;
+  /** Costed with verified evidence */
+  verified?: boolean;
+  /** Amount bought, e.g. "680 g" (costed lines) */
+  purchased?: string;
+  /** Arithmetic, e.g. "2 × $2.99" (costed lines) */
+  breakdown?: string;
+  /** Why the line isn't costed (uncosted lines) */
+  reasons?: string[];
 }
 
 export interface TripPlanStop {
@@ -49,183 +59,109 @@ export interface TripPlanStop {
 
 export interface TripPlan {
   stops: TripPlanStop[];
+  /** Lines with no usable offer at the plan's stores (or an unusable quantity) */
   unassigned: TripPlanItem[];
+  /** "Sale only" lines with no qualifying sale */
+  held: TripPlanItem[];
   totalCost: number;
-  savings: number;
-  /** False when the best single store doesn't cover the same items as the plan. */
+  /** Merchandise savings vs. the best single store; null = no comparable baseline. */
+  savings: number | null;
   savingsComparable: boolean;
   numStops: number;
+  costedCount: number;
+  totalCount: number;
+  fulfillment: Fulfillment;
+  claim: PlanClaim;
+  exact: boolean;
+  contextKey: string;
 }
 
-type PlanItem = { id: string; name: string; quantity: number; unit: string; notes?: string };
+type PlanItem = BasketItem & { unit?: string };
 
-// ─── Algorithm ──────────────────────────────────────────────────────────────
-
-/**
- * Generate all non-empty subsets of `arr` up to size `maxSize`.
- */
-function subsetsUpTo<T>(arr: T[], maxSize: number): T[][] {
-  const result: T[][] = [];
-  const n = arr.length;
-  const limit = Math.min(maxSize, n);
-
-  // Enumerate via bitmask (n ≤ 7 on this path)
-  for (let mask = 1; mask < (1 << n); mask++) {
-    const subset: T[] = [];
-    for (let i = 0; i < n; i++) {
-      if (mask & (1 << i)) subset.push(arr[i]);
-    }
-    if (subset.length <= limit) {
-      result.push(subset);
-    }
+function itemRow(item: PlanItem, line: PlanLine, now: number): TripPlanItem {
+  const o = line.option;
+  if (!o) {
+    return {
+      itemId: item.id,
+      itemName: item.name,
+      quantity: item.quantity,
+      price: null,
+      unit: item.unit || '',
+      lineTotal: null,
+      reasons: line.reasons,
+    };
   }
-  return result;
-}
-
-function unassignedItem(item: PlanItem): TripPlanItem {
   return {
     itemId: item.id,
     itemName: item.name,
     quantity: item.quantity,
-    price: 0,
-    unit: item.unit || '',
-    lineTotal: 0,
+    price: o.offer.price,
+    unit: o.offer.unit,
+    lineTotal: o.purchase.costCents / 100,
+    evidence: describeEvidence(o.offer, now),
+    verified: o.verified,
+    purchased: o.purchase.purchasedLabel,
+    breakdown: o.purchase.breakdown,
   };
 }
 
-function emptyPlan(items: PlanItem[]): TripPlan {
-  return {
-    stops: [],
-    unassigned: items.map(unassignedItem),
-    totalCost: 0,
-    savings: 0,
-    savingsComparable: false,
-    numStops: 0,
-  };
-}
-
-/** Turn a store-set evaluation into ordered stops. Empty stops are dropped. */
-function toStops(
+/** Reshape a solved plan for the trip sheet. */
+export function toTripPlan(
   items: PlanItem[],
-  storeIds: string[],
-  evaluation: ReturnType<typeof evaluateStores>,
-  storeNameMap: Record<string, string>,
-): TripPlanStop[] {
-  return storeIds
-    .map((sid) => {
-      const stopItems: TripPlanItem[] = [];
-      for (const item of items) {
-        const a = evaluation.assignments[item.id];
-        if (a?.storeId !== sid) continue;
-        stopItems.push({
-          itemId: item.id,
-          itemName: item.name,
-          quantity: item.quantity,
-          price: a.price.price,
-          unit: a.price.unit,
-          lineTotal: a.cost,
-          evidence: describeEvidence(a.price),
-          ...(a.quantityAssumed ? { quantityAssumed: true } : {}),
-        });
-      }
-      return {
-        storeId: sid,
-        storeName: storeNameMap[sid] ?? sid,
-        items: stopItems,
-        subtotal: stopItems.reduce((sum, it) => sum + it.lineTotal, 0),
-      };
-    })
-    .filter((stop) => stop.items.length > 0);
+  plan: BasketPlan,
+  baseline: BasketPlan | null,
+  storeNameMap: Record<string, string> = {},
+  now: number = Date.now(),
+): TripPlan {
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const rows = plan.lines.map((l) => ({ line: l, row: itemRow(byId.get(l.itemId)!, l, now) }));
+
+  const stops: TripPlanStop[] = plan.storeIds.map((sid) => {
+    const stopRows = rows.filter((r) => r.line.option?.storeId === sid).map((r) => r.row);
+    const cents = rows
+      .filter((r) => r.line.option?.storeId === sid)
+      .reduce((sum, r) => sum + r.line.option!.purchase.costCents, 0);
+    return { storeId: sid, storeName: storeNameMap[sid] ?? sid, items: stopRows, subtotal: cents / 100 };
+  });
+
+  const savings = compareSavings(plan, baseline);
+  return {
+    stops,
+    unassigned: rows.filter((r) => r.line.status !== 'costed' && r.line.status !== 'held').map((r) => r.row),
+    held: rows.filter((r) => r.line.status === 'held').map((r) => r.row),
+    totalCost: plan.totalCents / 100,
+    savings: savings.status === 'available' ? savings.amountCents / 100 : null,
+    savingsComparable: savings.status === 'available',
+    numStops: stops.length,
+    costedCount: plan.costedCount,
+    totalCount: plan.totalCount,
+    fulfillment: plan.fulfillment,
+    claim: plan.claim,
+    exact: plan.exact,
+    contextKey: plan.contextKey,
+  };
 }
 
 /**
  * Compute the optimal trip plan.
  *
- * - If ≤7 available stores: exact enumeration of all subsets up to maxStops
- * - Otherwise: greedy fallback
- *
- * @param items  Basket items (unchecked) with id, name, quantity, unit
- * @param perStorePrices  storeId → itemId → PriceResult (already eligibility-filtered)
- * @param maxStops  Maximum number of stops (default 3)
- * @param availableStores  Store IDs to consider
+ * @param items  Basket items (unchecked, non-zero quantity)
+ * @param perStorePrices  storeId → itemId → offer(s); eligibility is applied here
+ * @param maxStops  Maximum number of distinct stores (default 3)
+ * @param availableStores  Store IDs to consider (default: all)
  * @param storeNameMap  storeId → display name
+ * @param ctx  Shopping date, time zone, memberships, channel… (default: today)
  */
 export function computeTripPlan(
   items: PlanItem[],
-  perStorePrices: Record<string, Record<string, PriceResult>>,
+  perStorePrices: StoreOffers | Record<string, Record<string, PriceResult>>,
   maxStops: number = 3,
   availableStores?: string[],
   storeNameMap: Record<string, string> = {},
+  ctx: PlanContext = {},
 ): TripPlan {
-  const storeIds = availableStores ?? Object.keys(perStorePrices);
-  if (storeIds.length === 0 || items.length === 0) return emptyPlan(items);
-
-  // Stores with at least one price for at least one item
-  const relevantStores = storeIds.filter((sid) =>
-    items.some((item) => perStorePrices[sid]?.[item.id]),
-  );
-  if (relevantStores.length === 0) return emptyPlan(items);
-
-  const basket: BasketItem[] = items;
-  const evaluate = (subset: string[]) => evaluateStores(basket, subset, perStorePrices);
-  const effectiveMaxStops = Math.min(maxStops, relevantStores.length);
-
-  // One-stop baseline: the best single-store trip (coverage first, then cost).
-  let bestOneStopId = relevantStores[0];
-  let bestOneStop = evaluate([bestOneStopId]);
-  for (const sid of relevantStores.slice(1)) {
-    const result = evaluate([sid]);
-    if (isBetterPlan(result, bestOneStop)) {
-      bestOneStop = result;
-      bestOneStopId = sid;
-    }
-  }
-
-  let bestSubset = [bestOneStopId];
-  let bestResult = bestOneStop;
-
-  if (relevantStores.length <= 7) {
-    // ── Exact enumeration ────────────────────────────────────────────────
-    for (const subset of subsetsUpTo(relevantStores, effectiveMaxStops)) {
-      const result = evaluate(subset);
-      if (isBetterPlan(result, bestResult)) {
-        bestResult = result;
-        bestSubset = subset;
-      }
-    }
-  } else {
-    // ── Greedy fallback ──────────────────────────────────────────────────
-    // Start with the best single store, greedily add stores that improve
-    // the plan (more coverage, or equal coverage at lower cost).
-    const selected = [bestOneStopId];
-    while (selected.length < effectiveMaxStops) {
-      let bestCandidate: string | null = null;
-      let bestCandidateResult = bestResult;
-      for (const sid of relevantStores) {
-        if (selected.includes(sid)) continue;
-        const result = evaluate([...selected, sid]);
-        if (isBetterPlan(result, bestCandidateResult)) {
-          bestCandidateResult = result;
-          bestCandidate = sid;
-        }
-      }
-      if (bestCandidate === null) break;
-      selected.push(bestCandidate);
-      bestResult = bestCandidateResult;
-    }
-    bestSubset = selected;
-  }
-
-  const stops = toStops(items, bestSubset, bestResult, storeNameMap);
-  const missing = new Set(bestResult.missing);
-  const savings = comparableSavings(bestResult, bestOneStop);
-
-  return {
-    stops,
-    unassigned: items.filter((it) => missing.has(it.id)).map(unassignedItem),
-    totalCost: bestResult.total,
-    savings: savings ?? 0,
-    savingsComparable: savings !== null,
-    numStops: stops.length,
-  };
+  const analysis = analyzeBasket(items, perStorePrices as StoreOffers, ctx, availableStores);
+  const plan = solvePlan(analysis, maxStops, ctx);
+  const baseline = solvePlan(analysis, 1, ctx);
+  return toTripPlan(items, plan, baseline, storeNameMap, ctx.now);
 }

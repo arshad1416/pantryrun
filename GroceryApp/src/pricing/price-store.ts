@@ -12,13 +12,21 @@
  * The pricingOptedIn flag must be true before any price lookups are performed.
  * This flag is managed via the SettingsScreen with a privacy disclosure dialog
  * shown on first enable.
+ *
+ * FRESHNESS & RACES: every lookup takes a sequence number when it starts.
+ * A result is applied to a (store, item) only if no newer lookup or price
+ * edit has already been applied there, so a slow older request can never
+ * revert a newer price. When a store answers without an item it had
+ * before, the old price is kept only as a withdrawn record (ineligible,
+ * shown as "No longer offered"). When a store's lookup fails, its prices
+ * stay as last-known values flagged `refreshFailedAt` — usable for an
+ * estimate, never verified. A refresh never wipes prices first.
  */
 
 import { create } from 'zustand';
 import type { PriceResult, SubmittedPrice } from './types';
 import { priceRegistry } from './registry';
 import { crowdsourcedAdapter } from './crowdsourced';
-import { invalidateCache as invalidateTripPlanCache } from './trip-plan-cache';
 
 // ─── State Shape ────────────────────────────────────────────────────────────
 
@@ -37,6 +45,8 @@ export interface PriceState {
   priceTimestamps: Record<string, number>;
   /** Whether pull-to-refresh is active */
   isRefreshing: boolean;
+  /** storeId → message of its last failed lookup (cleared when it next answers) */
+  storeErrors: Record<string, string>;
 
   // Actions
   loadPrices: (
@@ -70,6 +80,32 @@ export interface PriceState {
 
 }
 
+// ─── Request ordering ───────────────────────────────────────────────────────
+
+let seqCounter = 0;
+/** (store, item) → sequence number of the lookup whose result is applied */
+const appliedSeq = new Map<string, number>();
+
+function nextSeq(): number {
+  return ++seqCounter;
+}
+
+function seqKey(storeId: string, itemId: string): string {
+  return `${storeId}\u0000${itemId}`;
+}
+
+/** True (and recorded) when lookup `seq` is at least as new as what's applied. */
+function claim(storeId: string, itemId: string, seq: number): boolean {
+  const key = seqKey(storeId, itemId);
+  if ((appliedSeq.get(key) ?? 0) > seq) return false;
+  appliedSeq.set(key, seq);
+  return true;
+}
+
+function withdrawn(pr: PriceResult): PriceResult {
+  return { ...pr, unavailable: 'withdrawn' };
+}
+
 // ─── Store ──────────────────────────────────────────────────────────────────
 
 export const usePriceStore = create<PriceState>((set, get) => ({
@@ -80,6 +116,7 @@ export const usePriceStore = create<PriceState>((set, get) => ({
   error: null,
   priceTimestamps: {},
   isRefreshing: false,
+  storeErrors: {},
 
   loadPrices: async (items, defaultStoreId) => {
     try {
@@ -127,28 +164,28 @@ export const usePriceStore = create<PriceState>((set, get) => ({
   },
 
   loadSinglePrice: async (itemId, itemName, storeId) => {
+    const seq = nextSeq();
     try {
       set((state) => ({
         itemLoading: { ...state.itemLoading, [itemId]: true },
       }));
 
       const result = await priceRegistry.getPrice(itemName, storeId);
-      if (result) {
-        invalidateTripPlanCache();
-        set((state) => ({
-          prices: { ...state.prices, [itemId]: result },
-          perStorePrices: {
-            ...state.perStorePrices,
-            [storeId]: { ...(state.perStorePrices[storeId] ?? {}), [itemId]: result },
-          },
-          itemLoading: { ...state.itemLoading, [itemId]: false },
-          priceTimestamps: { ...state.priceTimestamps, [itemId]: Date.now() },
-        }));
-      } else {
-        set((state) => ({
-          itemLoading: { ...state.itemLoading, [itemId]: false },
-        }));
-      }
+      set((state) => {
+        const itemLoading = { ...state.itemLoading, [itemId]: false };
+        if (!claim(storeId, itemId, seq)) return { itemLoading };
+        const storePrices = { ...(state.perStorePrices[storeId] ?? {}) };
+        const previous = storePrices[itemId];
+        if (result) storePrices[itemId] = result;
+        else if (previous && !previous.unavailable) storePrices[itemId] = withdrawn(previous);
+        else return { itemLoading };
+        return {
+          prices: result ? { ...state.prices, [itemId]: result } : state.prices,
+          perStorePrices: { ...state.perStorePrices, [storeId]: storePrices },
+          itemLoading,
+          priceTimestamps: result ? { ...state.priceTimestamps, [itemId]: Date.now() } : state.priceTimestamps,
+        };
+      });
     } catch {
       set((state) => ({
         itemLoading: { ...state.itemLoading, [itemId]: false },
@@ -157,61 +194,85 @@ export const usePriceStore = create<PriceState>((set, get) => ({
   },
 
   loadPricesForAllStores: async (items, storeIds) => {
+    const seq = nextSeq();
     try {
-      /** Stores that answered — only these may overwrite or drop prices. */
+      /** Stores that answered — only these may overwrite or withdraw prices. */
       const results: Record<string, Record<string, PriceResult>> = {};
+      const failures: Record<string, string> = {};
 
-      const outcomes = await Promise.allSettled(
+      await Promise.all(
         storeIds.map(async (storeId: string) => {
-          const itemNames = items.map((i) => i.name);
-          // NOTE: never log item names here — plaintext item names in logs
-          // would contradict the hashed-lookup privacy contract (AC-14).
-          const priceMap = await priceRegistry.getAllPrices(itemNames, storeId);
-          const storeResult: Record<string, PriceResult> = {};
-          for (const item of items) {
-            const result = priceMap.get(item.name);
-            if (result) {
-              storeResult[item.id] = result;
+          try {
+            const itemNames = items.map((i) => i.name);
+            // NOTE: never log item names here — plaintext item names in logs
+            // would contradict the hashed-lookup privacy contract (AC-14).
+            const priceMap = await priceRegistry.getAllPrices(itemNames, storeId);
+            const storeResult: Record<string, PriceResult> = {};
+            for (const item of items) {
+              const result = priceMap.get(item.name);
+              if (result) {
+                storeResult[item.id] = result;
+              }
             }
+            results[storeId] = storeResult;
+          } catch (err) {
+            failures[storeId] = err instanceof Error ? err.message : String(err);
           }
-          results[storeId] = storeResult;
-        })
+        }),
       );
 
-      const rejected = outcomes.find((o) => o.status === 'rejected') as PromiseRejectedResult | undefined;
-      if (rejected) {
-        set({
-          error: rejected.reason instanceof Error ? rejected.reason.message : String(rejected.reason),
-        });
-      }
-
-      invalidateTripPlanCache();
       const now = Date.now();
       set((state) => {
-        // Merge per item: a refetch of some items must not wipe a store's
-        // prices for the rest, and a price that's gone (offer ended) must
-        // not linger from an earlier fetch.
         const perStorePrices = { ...state.perStorePrices };
+        const prices = { ...state.prices };
+        const priceTimestamps = { ...state.priceTimestamps };
+        const storeErrors = { ...state.storeErrors };
+
         for (const [storeId, storeResult] of Object.entries(results)) {
+          delete storeErrors[storeId];
           const merged = { ...(perStorePrices[storeId] ?? {}) };
           for (const item of items) {
-            if (storeResult[item.id]) merged[item.id] = storeResult[item.id];
-            else delete merged[item.id];
+            if (!claim(storeId, item.id, seq)) continue; // a newer lookup or edit already landed
+            const result = storeResult[item.id];
+            if (result) {
+              merged[item.id] = result;
+              prices[item.id] = result;
+              priceTimestamps[item.id] = now;
+            } else if (merged[item.id] && !merged[item.id].unavailable) {
+              // The store answered and no longer lists it: never keep it as live.
+              merged[item.id] = withdrawn(merged[item.id]);
+            }
           }
           if (Object.keys(merged).length > 0) perStorePrices[storeId] = merged;
           else delete perStorePrices[storeId];
         }
+
+        for (const [storeId, message] of Object.entries(failures)) {
+          storeErrors[storeId] = message;
+          const existing = perStorePrices[storeId];
+          if (!existing) continue;
+          const marked = { ...existing };
+          for (const item of items) {
+            const pr = marked[item.id];
+            if (pr && seq >= (appliedSeq.get(seqKey(storeId, item.id)) ?? 0)) {
+              // Last-known price: still shown and usable for an estimate, never verified.
+              marked[item.id] = { ...pr, refreshFailedAt: now };
+            }
+          }
+          perStorePrices[storeId] = marked;
+        }
+
+        const failed = Object.keys(failures);
         return {
-          prices: { ...state.prices, ...Object.values(results).reduce((acc, storePrices) => ({ ...acc, ...storePrices }), {}) },
+          prices,
           perStorePrices,
-          priceTimestamps: {
-            ...state.priceTimestamps,
-            ...Object.fromEntries(
-              Object.values(results)
-                .flatMap(storePrices => Object.keys(storePrices))
-                .map(id => [id, now])
-            ),
-          },
+          priceTimestamps,
+          storeErrors,
+          ...(failed.length > 0
+            ? {
+                error: `Couldn't refresh ${failed.length} of ${storeIds.length} stores (${failures[failed[0]]}) — showing last-known prices`,
+              }
+            : {}),
         };
       });
     } catch (err) {
@@ -254,8 +315,8 @@ export const usePriceStore = create<PriceState>((set, get) => ({
   },
 
   clearPerStorePrices: () => {
-    invalidateTripPlanCache();
-    set({ perStorePrices: {} });
+    appliedSeq.clear();
+    set({ perStorePrices: {}, storeErrors: {} });
   },
 
   clearError: () => {
@@ -277,11 +338,9 @@ export const usePriceStore = create<PriceState>((set, get) => ({
   refreshAllPrices: async (items, storeIds) => {
     set({ isRefreshing: true, error: null });
     try {
-      // Clear existing prices to force fresh lookups
-      get().clearPrices();
-      get().clearPerStorePrices();
-
-      // Re-fetch all prices
+      // Re-fetch without wiping first: a store that fails keeps its prices as
+      // labelled last-known values instead of leaving nothing (or worse,
+      // looking freshly verified).
       await get().loadPricesForAllStores(items, storeIds);
     } catch (err) {
       set({
