@@ -7,6 +7,7 @@
  *  - Total row with how many items it covers, and savings vs. the best
  *    single-store trip only when that trip covers the same items
  *  - "Unassigned" section for items without an eligible price
+ *  - "Held" section for sale-only items with no qualifying sale
  */
 
 import React, { useRef } from 'react';
@@ -71,7 +72,9 @@ export default function TripPlanSheet({
 
   if (!plan) return null;
   const totalItems =
-    plan.stops.reduce((n, stop) => n + stop.items.length, 0) + plan.unassigned.length;
+    plan.stops.reduce((n, stop) => n + stop.items.length, 0) +
+    plan.unassigned.length + plan.held.length;
+  const pricedItems = totalItems - plan.unassigned.length - plan.held.length;
 
   return (
     <Modal
@@ -149,9 +152,16 @@ export default function TripPlanSheet({
                         {item.itemName}
                         {item.quantity > 1 || item.unit ? ` ×${item.quantity}${item.unit ? ` ${item.unit}` : ''}` : ''}
                       </Text>
-                      {(item.evidence || item.quantityAssumed) && (
+                      {(item.evidence || item.quantityAssumed || item.substitute) && (
                         <Text style={[styles.itemEvidence, { color: theme.secondaryText }]} numberOfLines={1}>
-                          {[item.evidence, item.quantityAssumed ? 'qty assumed: 1 pkg' : null]
+                          {[
+                            item.substitute ? 'substitute' : null,
+                            item.packages !== undefined && item.packages !== item.quantity
+                              ? `buy ${item.packages} pkg`
+                              : null,
+                            item.evidence,
+                            item.quantityAssumed ? 'qty assumed: 1 pkg' : null,
+                          ]
                             .filter(Boolean)
                             .join(' · ')}
                         </Text>
@@ -205,18 +215,43 @@ export default function TripPlanSheet({
               </View>
             )}
 
+            {/* Held for a sale */}
+            {plan.held.length > 0 && (
+              <View
+                style={[
+                  styles.unassignedCard,
+                  { backgroundColor: theme.stopBg, borderColor: theme.border },
+                ]}
+              >
+                <Text style={[styles.unassignedTitle, { color: theme.secondaryText }]}>
+                  ⏸ Held — sale only, no qualifying sale found
+                </Text>
+                {plan.held.map((item) => (
+                  <Text
+                    key={item.itemId}
+                    style={[styles.unassignedItem, { color: theme.secondaryText }]}
+                  >
+                    • {item.itemName}
+                  </Text>
+                ))}
+              </View>
+            )}
+
             {/* Totals */}
             <View style={[styles.totalCard, { borderColor: theme.border }]}>
               <View style={styles.totalRow}>
                 <Text style={[styles.totalLabel, { color: theme.secondaryText }]}>
-                  {plan.unassigned.length > 0
-                    ? `Estimated Total (${totalItems - plan.unassigned.length} of ${totalItems} items)`
+                  {pricedItems < totalItems
+                    ? `Estimated Total (${pricedItems} of ${totalItems} items)`
                     : 'Estimated Total'}
                 </Text>
                 <Text style={[styles.totalValue, { color: theme.text }]}>
                   ${plan.totalCost.toFixed(2)}
                 </Text>
               </View>
+              <Text style={[styles.savingsLabel, { color: theme.secondaryText, marginTop: 6 }]}>
+                Pretax merchandise among the prices checked — travel, tax and fees not included.
+              </Text>
               {!plan.savingsComparable && plan.numStops > 1 && (
                 <Text style={[styles.savingsLabel, { color: theme.secondaryText, marginTop: 6 }]}>
                   No single store carries the same items, so there's no 1-stop price to compare.

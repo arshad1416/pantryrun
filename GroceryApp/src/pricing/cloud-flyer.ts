@@ -137,6 +137,7 @@ export class CloudFlyerAdapter implements PriceAdapter {
       },
       timestamp: match.validTo - 14 * 24 * 60 * 60 * 1000, // estimate: ~2 weeks before validTo
       confidence: getConfidenceLevel(match.count, match.validTo),
+      validTo: match.validTo,
     };
   }
 
@@ -165,6 +166,7 @@ export class CloudFlyerAdapter implements PriceAdapter {
           },
           timestamp: match.validTo - 14 * 24 * 60 * 60 * 1000,
           confidence: getConfidenceLevel(match.count, match.validTo),
+          validTo: match.validTo,
         });
       }
     }

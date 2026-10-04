@@ -23,10 +23,18 @@ export interface StopProposal {
   totalCost: number;
   /** null = the 1-stop baseline covers different items, so no honest comparison. */
   savingsVsOneStop: number | null;
+  /**
+   * Merchandise saved by this route's last added stop vs the previous
+   * proposal — null for the first proposal or when the added stop changes
+   * which items are covered. Travel, tax and time are not included.
+   */
+  incrementalSavings: number | null;
   coveredCount: number;
   totalCount: number;
-  /** Item IDs this route can't supply */
+  /** Item IDs this route can't supply (includes `heldItemIds`) */
   missingItemIds: string[];
+  /** Sale-only items with no qualifying sale — deliberately not bought. */
+  heldItemIds: string[];
 }
 
 /**
@@ -38,7 +46,7 @@ export interface StopProposal {
  *   `maxStops`; stop when no store improves it
  */
 export function computeStopProposals(
-  items: { id: string; quantity: number; unit?: string; name?: string }[],
+  items: { id: string; quantity: number; unit?: string; name?: string; notes?: string }[],
   perStorePrices: Record<string, Record<string, PriceResult>>,
   storeNameMap: Record<string, string>,
   maxStops: number = 3,
@@ -64,19 +72,22 @@ export function computeStopProposals(
   const toProposal = (
     selected: string[],
     result: ReturnType<typeof evaluate>,
+    previous: ReturnType<typeof evaluate> | null,
   ): StopProposal => ({
     numStops: selected.length,
     stores: selected.map((sid) => ({ storeId: sid, storeName: storeNameMap[sid] ?? sid })),
     totalCost: result.total,
     savingsVsOneStop: comparableSavings(result, baseline),
+    incrementalSavings: previous ? comparableSavings(result, previous) : null,
     coveredCount: items.length - result.missing.length,
     totalCount: items.length,
     missingItemIds: result.missing,
+    heldItemIds: result.held,
   });
 
   const selected = [bestOneStopId];
   let current = baseline;
-  const proposals: StopProposal[] = [toProposal(selected, current)];
+  const proposals: StopProposal[] = [toProposal(selected, current, null)];
   const limit = Math.min(maxStops, availableStoreIds.length);
 
   while (selected.length < limit) {
@@ -93,8 +104,8 @@ export function computeStopProposals(
     if (bestNextId === null) break;
 
     selected.push(bestNextId);
+    proposals.push(toProposal(selected, bestNext, current));
     current = bestNext;
-    proposals.push(toProposal(selected, current));
   }
 
   return proposals;

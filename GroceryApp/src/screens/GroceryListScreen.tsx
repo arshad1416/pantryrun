@@ -1050,6 +1050,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
                 name: item.name,
                 quantity: item.quantity,
                 unit: item.unit,
+                notes: item.notes,
               }))}
             />
           )}

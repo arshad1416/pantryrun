@@ -37,6 +37,24 @@ export interface PriceResult {
   packageSize?: number;
   /** Seeded demo data, not an observed price. */
   isDemo?: boolean;
+  /** Synthetic test fixture, never production evidence. */
+  isFixture?: boolean;
+  /**
+   * Stock evidence at observation time. Absent or 'unknown' is not proof the
+   * item is in stock; 'out_of_stock' makes the offer unusable.
+   */
+  stock?: 'in_stock' | 'out_of_stock' | 'unknown';
+  /**
+   * Condition attached to the price, e.g. 'PC Optimum' or 'Costco membership'.
+   * A conditional price is only eligible when the shopper has that condition.
+   */
+  membership?: string;
+  /** Where the offer applies — shelf, online order, or printed flyer. */
+  channel?: 'in_store' | 'online' | 'flyer';
+  /** ISO 4217 code of `price`; CAD when absent. */
+  currency?: string;
+  /** Page the price was read from, for review. */
+  sourceUrl?: string;
 }
 
 export interface PriceSource {

@@ -41,7 +41,7 @@ export interface TripPlanCacheKey {
  */
 export function buildCacheKey(
   maxStops: number,
-  items: { id: string; quantity: number; unit?: string }[],
+  items: { id: string; quantity: number; unit?: string; name?: string; notes?: string }[],
   perStorePrices: Record<string, Record<string, PriceResult>>,
 ): TripPlanCacheKey {
   const storeIds = Object.keys(perStorePrices).sort();
@@ -50,14 +50,22 @@ export function buildCacheKey(
   for (const sid of storeIds) {
     for (const id of itemIds) {
       const pr = perStorePrices[sid]?.[id];
-      if (pr) prices.push(`${sid}:${id}=${pr.price}/${pr.packageSize ?? ''}${pr.unit}`);
+      if (pr) {
+        prices.push(
+          `${sid}:${id}=${pr.price}/${pr.packageSize ?? ''}${pr.unit}` +
+            `|${pr.validTo ?? ''}|${pr.matchedName ?? ''}|${pr.membership ?? ''}`,
+        );
+      }
     }
   }
   return {
     maxStops,
     itemIds,
     storeIds,
-    quantities: Object.fromEntries(items.map((i) => [i.id, `${i.quantity}${i.unit ?? ''}`])),
+    // Name and notes decide holds, substitutes and variant rules.
+    quantities: Object.fromEntries(
+      items.map((i) => [i.id, `${i.quantity}${i.unit ?? ''}|${i.name ?? ''}|${i.notes ?? ''}`]),
+    ),
     prices,
   };
 }

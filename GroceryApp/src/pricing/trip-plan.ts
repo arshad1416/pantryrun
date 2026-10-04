@@ -13,6 +13,10 @@
  * trip minus the optimized total. It is only reported when the baseline
  * covers exactly the same items (`savingsComparable`); otherwise it is 0
  * and the UI must say the trips aren't comparable.
+ *
+ * Totals are pretax merchandise only — no travel, tax or fees — and the
+ * plan is the cheapest among the eligible prices it was given, not the
+ * cheapest in the market.
  */
 
 import type { PriceResult } from './types';
@@ -21,6 +25,7 @@ import {
   describeEvidence,
   evaluateStores,
   isBetterPlan,
+  isSaleOnlyHold,
   type BasketItem,
 } from './basket';
 
@@ -38,6 +43,12 @@ export interface TripPlanItem {
   quantityAssumed?: boolean;
   /** Where the price came from, e.g. "Flyer · ends Oct 9" (assigned items only) */
   evidence?: string;
+  /** Fixed packages to buy; absent for goods priced by weight. */
+  packages?: number;
+  /** What actually goes home, in the price's unit. */
+  purchased?: { amount: number; unit: string };
+  /** An allowed stand-in rather than the requested product. */
+  substitute?: boolean;
 }
 
 export interface TripPlanStop {
@@ -49,7 +60,10 @@ export interface TripPlanStop {
 
 export interface TripPlan {
   stops: TripPlanStop[];
+  /** Items with no eligible price — unknown, not $0. Excludes `held`. */
   unassigned: TripPlanItem[];
+  /** Sale-only items with no qualifying sale, deliberately left out of the total. */
+  held: TripPlanItem[];
   totalCost: number;
   savings: number;
   /** False when the best single store doesn't cover the same items as the plan. */
@@ -96,7 +110,8 @@ function unassignedItem(item: PlanItem): TripPlanItem {
 function emptyPlan(items: PlanItem[]): TripPlan {
   return {
     stops: [],
-    unassigned: items.map(unassignedItem),
+    unassigned: items.filter((it) => !isSaleOnlyHold(it)).map(unassignedItem),
+    held: items.filter(isSaleOnlyHold).map(unassignedItem),
     totalCost: 0,
     savings: 0,
     savingsComparable: false,
@@ -125,14 +140,17 @@ function toStops(
           unit: a.price.unit,
           lineTotal: a.cost,
           evidence: describeEvidence(a.price),
+          purchased: a.purchased,
+          ...(a.packages !== undefined ? { packages: a.packages } : {}),
           ...(a.quantityAssumed ? { quantityAssumed: true } : {}),
+          ...(a.match === 'substitute' ? { substitute: true } : {}),
         });
       }
       return {
         storeId: sid,
         storeName: storeNameMap[sid] ?? sid,
         items: stopItems,
-        subtotal: stopItems.reduce((sum, it) => sum + it.lineTotal, 0),
+        subtotal: Math.round(stopItems.reduce((sum, it) => sum + it.lineTotal, 0) * 100) / 100,
       };
     })
     .filter((stop) => stop.items.length > 0);
@@ -218,11 +236,15 @@ export function computeTripPlan(
 
   const stops = toStops(items, bestSubset, bestResult, storeNameMap);
   const missing = new Set(bestResult.missing);
+  const held = new Set(bestResult.held);
   const savings = comparableSavings(bestResult, bestOneStop);
 
   return {
     stops,
-    unassigned: items.filter((it) => missing.has(it.id)).map(unassignedItem),
+    unassigned: items
+      .filter((it) => missing.has(it.id) && !held.has(it.id))
+      .map(unassignedItem),
+    held: items.filter((it) => held.has(it.id)).map(unassignedItem),
     totalCost: bestResult.total,
     savings: savings ?? 0,
     savingsComparable: savings !== null,

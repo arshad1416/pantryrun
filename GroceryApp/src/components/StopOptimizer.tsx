@@ -19,13 +19,13 @@ import type { TripPlan } from '../pricing/trip-plan';
 
 interface StopOptimizerProps {
   /** Basket items (unchecked) — prices must already be eligibility-filtered */
-  items: { id: string; quantity: number; unit?: string; name?: string }[];
+  items: { id: string; quantity: number; unit?: string; name?: string; notes?: string }[];
   perStorePrices: Record<string, Record<string, PriceResult>>;
   storeNameMap: Record<string, string>;
   selectedRouteNumStops?: number | null;
   onSelectRouteNumStops?: (numStops: number | null) => void;
-  /** Full item data (name + unit) for trip plan computation */
-  fullItems?: { id: string; name: string; quantity: number; unit: string }[];
+  /** Full item data (name, unit, notes) for trip plan computation */
+  fullItems?: { id: string; name: string; quantity: number; unit: string; notes?: string }[];
 }
 
 import { themeColors } from './groceryTheme';
@@ -51,11 +51,12 @@ export default function StopOptimizer({
   );
 
   // "Best value" goes to the cheapest route that covers the whole basket —
-  // never to a route that's cheap because it leaves items out.
+  // never to a route that's cheap because it leaves items out. Sale-only
+  // holds are deliberate, so they don't disqualify a route.
   const bestValueNumStops = useMemo(() => {
     let best: (typeof proposals)[number] | null = null;
     for (const p of proposals) {
-      if (p.coveredCount !== p.totalCount) continue;
+      if (p.coveredCount + p.heldItemIds.length !== p.totalCount) continue;
       if (!best || p.totalCost < best.totalCost) best = p;
     }
     return proposals.length > 1 ? best?.numStops ?? null : null;
@@ -115,7 +116,9 @@ export default function StopOptimizer({
               {proposals.map((prop) => {
                 const isSelected = selectedRouteNumStops === prop.numStops;
                 const isBestValue = prop.numStops === bestValueNumStops;
-                const isPartial = prop.coveredCount < prop.totalCount;
+                const held = prop.heldItemIds.length;
+                const unpriced = prop.totalCount - prop.coveredCount - held;
+                const isPartial = unpriced > 0;
 
                 return (
                   <TouchableOpacity
@@ -155,10 +158,19 @@ export default function StopOptimizer({
                       {prop.stores.map((s) => s.storeName).join(' + ')}
                     </Text>
                     <Text style={[styles.cardStores, { color: isPartial ? theme.unassignedText : theme.secondaryText }]}>
-                      {isPartial
-                        ? `${prop.coveredCount} of ${prop.totalCount} items · ${prop.totalCount - prop.coveredCount} not priced`
-                        : `All ${prop.totalCount} items`}
+                      {prop.coveredCount === prop.totalCount
+                        ? `All ${prop.totalCount} items`
+                        : [
+                            `${prop.coveredCount} of ${prop.totalCount} items`,
+                            unpriced > 0 ? `${unpriced} not priced` : null,
+                            held > 0 ? `${held} held for a sale` : null,
+                          ].filter(Boolean).join(' · ')}
                     </Text>
+                    {prop.incrementalSavings !== null && prop.incrementalSavings > 0 && (
+                      <Text style={[styles.cardStores, { color: theme.secondaryText }]}>
+                        Extra stop saves ${prop.incrementalSavings.toFixed(2)} before travel
+                      </Text>
+                    )}
                     {prop.savingsVsOneStop === null && prop.numStops > 1 && (
                       <Text style={[styles.cardStores, { color: theme.secondaryText }]}>
                         Not comparable to 1 stop — different items covered

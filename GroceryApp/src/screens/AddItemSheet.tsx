@@ -8,7 +8,7 @@
  *  - Parsed voice text pre-fills the name/quantity/unit fields
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -27,6 +27,7 @@ import { BUILT_IN_CATEGORIES } from '../types';
 import { useGroceryStore } from '../state/useGroceryStore';
 import { useFamilyStore } from '../state/useFamilyStore';
 import { parseVoiceText } from '../voice/nlp';
+import { parseImport } from '../services/list-import';
 import type { ParsedItem } from '../voice/types';
 import { useActiveTheme } from '../state/useThemeStore';
 import BarcodeScannerScreen from '../components/BarcodeScannerScreen';
@@ -151,6 +152,11 @@ export default function AddItemSheet({
   const [newProductName, setNewProductName] = useState('');
   const [pendingImageUrl, setPendingImageUrl] = useState<string | undefined>();
 
+  // Paste-a-list state (Keep "Copy to clipboard" or Takeout JSON)
+  const [pasteVisible, setPasteVisible] = useState(false);
+  const [pasteText, setPasteText] = useState('');
+  const pastePreview = useMemo(() => parseImport(pasteText), [pasteText]);
+
   // Voice input state
   const [voiceModalVisible, setVoiceModalVisible] = useState(false);
   const [voiceText, setVoiceText] = useState('');
@@ -183,27 +189,26 @@ export default function AddItemSheet({
     onClose();
   }, [onClose, resetForm]);
 
+  /** familyId and the next sort position for a new item on this list. */
+  const listContext = useCallback(() => {
+    // Find familyId from first existing item or member
+    const listItems = Object.values(items).filter((i) => i.listId === listId);
+    const familyId =
+      listItems.length > 0
+        ? listItems[0].familyId
+        : Object.values(familyMembers).length > 0
+          ? Object.values(familyMembers)[0].familyId
+          : '';
+    const maxSort = listItems.length > 0 ? Math.max(...listItems.map((i) => i.sortOrder)) : 0;
+    return { familyId, maxSort };
+  }, [items, listId, familyMembers]);
+
   // Add an item
   const handleAddItem = useCallback(
     async (name: string, category: string, unit: string, quantity: number, imageUrl?: string) => {
       setAdding(true);
       try {
-        // Find familyId from first existing item or member
-        const listItems = Object.values(items).filter(
-          (i) => i.listId === listId,
-        );
-        const familyId =
-          listItems.length > 0
-            ? listItems[0].familyId
-            : Object.values(familyMembers).length > 0
-              ? Object.values(familyMembers)[0].familyId
-              : '';
-
-        const maxSort =
-          listItems.length > 0
-            ? Math.max(...listItems.map((i) => i.sortOrder))
-            : 0;
-
+        const { familyId, maxSort } = listContext();
         await addItem({
           listId,
           familyId,
@@ -226,8 +231,46 @@ export default function AddItemSheet({
         setAdding(false);
       }
     },
-    [addItem, items, listId, activeMemberId, familyMembers, resetForm, onItemAdded],
+    [addItem, listContext, listId, activeMemberId, resetForm, onItemAdded],
   );
+
+  /**
+   * Add every pasted line as written: checked state kept, notes kept, and a
+   * store heading kept as a hint in the note (alternative stores still allowed).
+   */
+  const handleImportPaste = useCallback(async () => {
+    const lines = pastePreview.items;
+    if (lines.length === 0) return;
+    setAdding(true);
+    try {
+      const { familyId, maxSort } = listContext();
+      for (const [i, line] of lines.entries()) {
+        const notes = [line.notes, line.storeHint ? `Store hint: ${line.storeHint}` : null]
+          .filter(Boolean)
+          .join('; ');
+        await addItem({
+          listId,
+          familyId,
+          name: line.name,
+          quantity: line.quantity,
+          unit: line.unit,
+          category: 'other',
+          isChecked: line.checked,
+          addedBy: activeMemberId ?? 'unknown',
+          ...(notes ? { notes } : {}),
+          sortOrder: maxSort + 1 + i,
+        });
+      }
+      setPasteVisible(false);
+      setPasteText('');
+      onItemAdded?.();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to import list';
+      Alert.alert('Error', message);
+    } finally {
+      setAdding(false);
+    }
+  }, [pastePreview, listContext, addItem, listId, activeMemberId, onItemAdded]);
 
   // Handle custom item add
   const handleAddCustom = useCallback(() => {
@@ -629,6 +672,16 @@ export default function AddItemSheet({
               <Text style={styles.voiceBtnText}>📷 Scan Barcode</Text>
             </TouchableOpacity>
           </View>
+          <View style={styles.voiceSection}>
+            <TouchableOpacity
+              style={[styles.voiceBtn, { backgroundColor: theme.tabInactiveBg }]}
+              onPress={() => setPasteVisible(true)}
+              disabled={adding}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.voiceBtnText, { color: theme.tabInactiveText }]}>📋 Paste a List</Text>
+            </TouchableOpacity>
+          </View>
 
           {/* Voice parse result indicator */}
           {voiceParsed && (
@@ -765,6 +818,72 @@ export default function AddItemSheet({
                   disabled={!voiceText.trim()}
                 >
                   <Text style={styles.voiceDialogParseText}>Parse</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        {/* ── Paste-a-list Modal ─────────────────────────────────────── */}
+        <Modal
+          visible={pasteVisible}
+          animationType="fade"
+          transparent
+          onRequestClose={() => setPasteVisible(false)}
+        >
+          <View style={[styles.voiceOverlay, { backgroundColor: theme.modalOverlay }]}>
+            <View style={[styles.voiceDialog, { backgroundColor: theme.cardBg }]}>
+              <Text style={[styles.voiceDialogTitle, { color: theme.text }]}>Paste a List</Text>
+              <Text style={[styles.voiceDialogHint, { color: theme.secondaryText }]}>
+                In Google Keep use ⋮ → Copy to clipboard, then paste here. A Google
+                Takeout Keep note (.json) also works. Store names become headings.
+              </Text>
+              <TextInput
+                style={[styles.voiceDialogInput, { backgroundColor: theme.inputBg, color: theme.text, borderColor: theme.border }]}
+                value={pasteText}
+                onChangeText={setPasteText}
+                placeholder={'☐ Milk\n☐ Ketchup, sale only\nCostco\n☐ Paper towels'}
+                placeholderTextColor={activeTheme === 'dark' ? '#64748B' : '#94A3B8'}
+                autoCapitalize="none"
+                autoFocus
+                multiline
+              />
+              {pastePreview.items.length > 0 && (
+                <ScrollView style={{ maxHeight: 180, marginBottom: 12 }}>
+                  {pastePreview.items.map((line, i) => (
+                    <Text key={i} style={[styles.voiceDialogHint, { color: theme.text, marginBottom: 2 }]}>
+                      {line.checked ? '☑' : '☐'} {line.name}
+                      {line.quantitySpecified ? ` ×${line.quantity}${line.unit ? ` ${line.unit}` : ''}` : ''}
+                      {line.notes ? ` — ${line.notes}` : ''}
+                      {line.storeHint ? ` [${line.storeHint}]` : ''}
+                    </Text>
+                  ))}
+                  {pastePreview.headings.length > 0 && (
+                    <Text style={[styles.voiceDialogHint, { color: theme.secondaryText }]}>
+                      Headings (not added): {pastePreview.headings.join(', ')}
+                    </Text>
+                  )}
+                </ScrollView>
+              )}
+              <View style={styles.voiceDialogActions}>
+                <TouchableOpacity
+                  style={[styles.voiceDialogCancel, { backgroundColor: theme.tabInactiveBg }]}
+                  onPress={() => setPasteVisible(false)}
+                >
+                  <Text style={[styles.voiceDialogCancelText, { color: theme.tabInactiveText }]}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.voiceDialogParse,
+                    { backgroundColor: theme.primary },
+                    (pastePreview.items.length === 0 || adding) && styles.voiceDialogParseDisabled,
+                  ]}
+                  onPress={handleImportPaste}
+                  disabled={pastePreview.items.length === 0 || adding}
+                >
+                  <Text style={styles.voiceDialogParseText}>
+                    Add {pastePreview.items.length} {pastePreview.items.length === 1 ? 'item' : 'items'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </View>

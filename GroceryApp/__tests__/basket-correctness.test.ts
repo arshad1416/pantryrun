@@ -20,6 +20,8 @@ import {
   selectBasketItems,
   filterEligiblePrices,
   ineligibleReason,
+  classifyMatch,
+  evidenceStatus,
   lineCost,
   describeEvidence,
   type BasketItem,
@@ -251,20 +253,21 @@ describe('5. notes and variants constrain matches', () => {
   });
 
   it('lactose-free milk does not match plain milk', () => {
+    // "2% Milk" doesn't say it's lactose-free: unresolved, and never eligible.
     const plain = price(5.49, { matchedName: 'Neilson 2% Milk 4 L' });
-    expect(ineligibleReason(plain, { name: 'lactose-free milk' })).toBe('variant_mismatch');
+    expect(ineligibleReason(plain, { name: 'lactose-free milk' })).toBe('unresolved_match');
     const lf = price(6.49, { matchedName: 'Lactantia Lactose Free Milk 2 L' });
     expect(ineligibleReason(lf, { name: 'lactose-free milk' })).toBeNull();
   });
 
   it('a note requirement is enforced (milk, "lactose-free only")', () => {
     const plain = price(5.49, { matchedName: '2% Milk' });
-    expect(ineligibleReason(plain, { name: 'milk', notes: 'lactose-free only' })).toBe('variant_mismatch');
+    expect(ineligibleReason(plain, { name: 'milk', notes: 'lactose-free only' })).toBe('unresolved_match');
   });
 
   it('Jamaican patties must be Jamaican patties', () => {
     const pr = price(4.99, { matchedName: 'Beef Patties 8 pk' });
-    expect(ineligibleReason(pr, { name: 'Jamaican patties' })).toBe('variant_mismatch');
+    expect(ineligibleReason(pr, { name: 'Jamaican patties' })).toBe('unresolved_match');
     expect(
       ineligibleReason(price(5.99, { matchedName: 'Tastee Jamaican Beef Patties' }), { name: 'Jamaican patties' }),
     ).toBeNull();
@@ -285,12 +288,47 @@ describe('5. notes and variants constrain matches', () => {
   });
 });
 
+describe('5b. evidence conditions and substitution policy', () => {
+  it('an out-of-stock offer is unavailable; unknown stock is not "in stock" but stays usable', () => {
+    expect(ineligibleReason(price(2, { stock: 'out_of_stock' }), { name: 'x' })).toBe('unavailable');
+    expect(ineligibleReason(price(2), { name: 'x' })).toBeNull();
+    expect(evidenceStatus(price(2, { stock: 'out_of_stock' }))).toBe('unavailable');
+  });
+
+  it('a member price needs that membership', () => {
+    const member = price(2, { membership: 'PC Optimum' });
+    expect(ineligibleReason(member, { name: 'x' })).toBe('membership_required');
+    expect(ineligibleReason(member, { name: 'x' }, { memberships: ['PC Optimum'] })).toBeNull();
+    expect(describeEvidence(member, NOW)).toMatch(/PC Optimum price$/);
+  });
+
+  it('evidence status separates retailer, manual, demo and expired prices', () => {
+    expect(evidenceStatus(price(1, {}, 'flyer'))).toBe('verified');
+    expect(evidenceStatus(price(1, {}, 'crowd'))).toBe('manual');
+    expect(evidenceStatus(price(1, { isDemo: true }))).toBe('demo');
+    expect(evidenceStatus(price(1, { validTo: NOW - DAY }), NOW)).toBe('expired');
+  });
+
+  it('a cheaper stand-in is only used when the note allows substitutes, never dropping a hard variant', () => {
+    const pr = price(2, { matchedName: 'Lactose Free Milk' });
+    // Default policy is exact: a missing ordinary word leaves the match unresolved.
+    expect(classifyMatch(pr, { name: 'Neilson LF milk' })).toBe('unresolved');
+    // "WHOLE" in capitals is hard, so even "any brand" can't drop it.
+    expect(classifyMatch(pr, { name: 'WHOLE LF milk', notes: 'any brand' })).toBe('rejected');
+    const loose = { name: 'Neilson LF milk', notes: 'any brand' };
+    expect(classifyMatch(pr, loose)).toBe('substitute');
+    expect(classifyMatch(price(2, { matchedName: 'Neilson 2% Milk' }), loose)).toBe('rejected');
+  });
+});
+
 // ─── 6. Quantities ──────────────────────────────────────────────────────────
 
 describe('6. quantity math buys whole packages', () => {
   it('2 L of milk from a 4 L jug is one jug, not 2 × the price', () => {
     const jug = price(5.49, { unit: 'L', packageSize: 4 });
-    expect(lineCost({ quantity: 2, unit: 'L' }, jug)).toEqual({ cost: 5.49, quantityAssumed: false });
+    expect(lineCost({ quantity: 2, unit: 'L' }, jug)).toMatchObject({
+      cost: 5.49, quantityAssumed: false, packages: 1, purchased: { amount: 4, unit: 'L' },
+    });
     expect(lineCost({ quantity: 5, unit: 'L' }, jug).cost).toBeCloseTo(10.98);
   });
 
@@ -306,7 +344,9 @@ describe('6. quantity math buys whole packages', () => {
   });
 
   it('a mismatched unit assumes one package and says so', () => {
-    expect(lineCost({ quantity: 2, unit: 'kg' }, price(3.99))).toEqual({ cost: 3.99, quantityAssumed: true });
+    expect(lineCost({ quantity: 2, unit: 'kg' }, price(3.99))).toMatchObject({
+      cost: 3.99, quantityAssumed: true, packages: 1,
+    });
   });
 
   it('the trip plan uses package math for its totals', () => {

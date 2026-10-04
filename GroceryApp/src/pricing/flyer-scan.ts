@@ -117,6 +117,7 @@ export class FlyerScanAdapter implements PriceAdapter {
       },
       timestamp: newest.scannedAt,
       confidence: getConfidenceLevel(newest.confidence),
+      ...(newest.validTo !== null ? { validTo: newest.validTo } : {}),
     };
   }
 
