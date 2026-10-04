@@ -5,7 +5,8 @@
  *  - Regular price: "$3.49" in grey
  *  - Sale: "~~$4.99~~  $3.49" with strikethrough, green savings badge
  *  - Unit price: tiny grey text below "$1.50/100g"
- *  - Source badge: tiny colored badge ("Crowd", "Instacart", "Scrape")
+ *  - Evidence badge: where the price came from and how current it is
+ *    ("Flyer · ends Oct 9", "Crowd · 3d ago", "Demo")
  *  - "FAKE SALE" in red if unitPriceVsRegular > 0
  *  - Loading shimmer when isLoading is true
  *  - Empty space when no price data
@@ -15,6 +16,7 @@ import React from 'react';
 import { View, Text, StyleSheet, Animated } from 'react-native';
 import type { PriceResult } from '../pricing/types';
 import { formatUnitPrice } from '../pricing/normalizer';
+import { describeEvidence } from '../pricing/basket';
 import { useActiveTheme } from '../state/useThemeStore';
 
 // ─── Props ──────────────────────────────────────────────────────────────────
@@ -31,7 +33,11 @@ const SOURCE_COLORS: Record<string, string> = {
   instacart: '#4CAF50',
   scraping: '#9C27B0',
   'flyer-scan': '#2196F3',
+  'flipp-deals': '#2196F3',
 };
+
+/** Seeded demo prices get a neutral badge so they never look like real data. */
+const DEMO_COLOR = '#757575';
 
 // ─── Shimmer / Skeleton ────────────────────────────────────────────────────
 
@@ -62,17 +68,8 @@ export default function PriceBadge({ price, isLoading }: PriceBadgeProps) {
   const isFakeSale = saleInfo && saleInfo.unitPriceVsRegular > 0;
   const isGenuineSale = saleInfo && saleInfo.isOnSale && !isFakeSale;
 
-  const sourceColor = SOURCE_COLORS[source.adapterId] ?? '#999';
-  const sourceLabel =
-    source.adapterId === 'crowdsourced'
-      ? 'Crowd'
-      : source.adapterId === 'instacart'
-        ? 'Instacart'
-        : source.adapterId === 'scraping'
-          ? 'Scrape'
-          : source.adapterId === 'flyer-scan'
-            ? 'Flyer'
-            : source.adapterId;
+  const sourceColor = price.isDemo ? DEMO_COLOR : SOURCE_COLORS[source.adapterId] ?? '#999';
+  const sourceLabel = describeEvidence(price);
 
   // Format the unit price using the normalizer
   const displayUnit = price.displayUnit ?? '/' + price.unit;

@@ -29,6 +29,14 @@ export interface PriceResult {
   timestamp: number;
   confidence: ConfidenceLevel;
   imageUrl?: string;
+  /** Offer end (epoch ms). A price past this instant must not be used. */
+  validTo?: number;
+  /** Product name the adapter actually matched — checked against variant constraints. */
+  matchedName?: string;
+  /** Amount of `unit` the price buys (e.g. 4 with unit 'L' for a 4 L jug). */
+  packageSize?: number;
+  /** Seeded demo data, not an observed price. */
+  isDemo?: boolean;
 }
 
 export interface PriceSource {

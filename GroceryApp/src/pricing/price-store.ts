@@ -18,9 +18,7 @@ import { create } from 'zustand';
 import type { PriceResult, SubmittedPrice } from './types';
 import { priceRegistry } from './registry';
 import { crowdsourcedAdapter } from './crowdsourced';
-
-import { computeTripPlan, type TripPlan } from './trip-plan';
-import { buildCacheKey, getCachedPlan, setCachedPlan } from './trip-plan-cache';
+import { invalidateCache as invalidateTripPlanCache } from './trip-plan-cache';
 
 // ─── State Shape ────────────────────────────────────────────────────────────
 
@@ -70,18 +68,6 @@ export interface PriceState {
     storeIds: string[],
   ) => Promise<void>;
 
-  // ─── Trip Plan State ──────────────────────────────────────────────────
-  /** Current trip plan (computed after prices load) */
-  tripPlan: TripPlan | null;
-  /** Max stops for trip planning */
-  maxStops: number;
-  /** Set max stops and recompute plan */
-  setMaxStops: (maxStops: number) => void;
-  /** Precompute trip plan from current prices */
-  precomputeTripPlan: (
-    items: { id: string; name: string; quantity: number; unit: string }[],
-    storeNameMap: Record<string, string>,
-  ) => void;
 }
 
 // ─── Store ──────────────────────────────────────────────────────────────────
@@ -94,8 +80,6 @@ export const usePriceStore = create<PriceState>((set, get) => ({
   error: null,
   priceTimestamps: {},
   isRefreshing: false,
-  tripPlan: null,
-  maxStops: 3,
 
   loadPrices: async (items, defaultStoreId) => {
     try {
@@ -150,8 +134,13 @@ export const usePriceStore = create<PriceState>((set, get) => ({
 
       const result = await priceRegistry.getPrice(itemName, storeId);
       if (result) {
+        invalidateTripPlanCache();
         set((state) => ({
           prices: { ...state.prices, [itemId]: result },
+          perStorePrices: {
+            ...state.perStorePrices,
+            [storeId]: { ...(state.perStorePrices[storeId] ?? {}), [itemId]: result },
+          },
           itemLoading: { ...state.itemLoading, [itemId]: false },
           priceTimestamps: { ...state.priceTimestamps, [itemId]: Date.now() },
         }));
@@ -169,6 +158,7 @@ export const usePriceStore = create<PriceState>((set, get) => ({
 
   loadPricesForAllStores: async (items, storeIds) => {
     try {
+      /** Stores that answered — only these may overwrite or drop prices. */
       const results: Record<string, Record<string, PriceResult>> = {};
 
       const outcomes = await Promise.allSettled(
@@ -184,9 +174,7 @@ export const usePriceStore = create<PriceState>((set, get) => ({
               storeResult[item.id] = result;
             }
           }
-          if (Object.keys(storeResult).length > 0) {
-            results[storeId] = storeResult;
-          }
+          results[storeId] = storeResult;
         })
       );
 
@@ -197,18 +185,35 @@ export const usePriceStore = create<PriceState>((set, get) => ({
         });
       }
 
-      set((state) => ({
-        prices: { ...state.prices, ...Object.values(results).reduce((acc, storePrices) => ({ ...acc, ...storePrices }), {}) },
-        perStorePrices: { ...state.perStorePrices, ...results },
-        priceTimestamps: {
-          ...state.priceTimestamps,
-          ...Object.fromEntries(
-            Object.values(results)
-              .flatMap(storePrices => Object.keys(storePrices))
-              .map(id => [id, Date.now()])
-          ),
-        },
-      }));
+      invalidateTripPlanCache();
+      const now = Date.now();
+      set((state) => {
+        // Merge per item: a refetch of some items must not wipe a store's
+        // prices for the rest, and a price that's gone (offer ended) must
+        // not linger from an earlier fetch.
+        const perStorePrices = { ...state.perStorePrices };
+        for (const [storeId, storeResult] of Object.entries(results)) {
+          const merged = { ...(perStorePrices[storeId] ?? {}) };
+          for (const item of items) {
+            if (storeResult[item.id]) merged[item.id] = storeResult[item.id];
+            else delete merged[item.id];
+          }
+          if (Object.keys(merged).length > 0) perStorePrices[storeId] = merged;
+          else delete perStorePrices[storeId];
+        }
+        return {
+          prices: { ...state.prices, ...Object.values(results).reduce((acc, storePrices) => ({ ...acc, ...storePrices }), {}) },
+          perStorePrices,
+          priceTimestamps: {
+            ...state.priceTimestamps,
+            ...Object.fromEntries(
+              Object.values(results)
+                .flatMap(storePrices => Object.keys(storePrices))
+                .map(id => [id, now])
+            ),
+          },
+        };
+      });
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : 'Failed to load prices for all stores',
@@ -249,6 +254,7 @@ export const usePriceStore = create<PriceState>((set, get) => ({
   },
 
   clearPerStorePrices: () => {
+    invalidateTripPlanCache();
     set({ perStorePrices: {} });
   },
 
@@ -284,34 +290,5 @@ export const usePriceStore = create<PriceState>((set, get) => ({
     } finally {
       set({ isRefreshing: false });
     }
-  },
-
-  setMaxStops: (maxStops: number) => {
-    set({ maxStops, tripPlan: null }); // Reset plan so it's recomputed
-  },
-
-  precomputeTripPlan: (items, storeNameMap) => {
-    const { perStorePrices, maxStops } = get();
-    const storeIds = Object.keys(perStorePrices);
-    if (storeIds.length === 0 || items.length === 0) {
-      set({ tripPlan: null });
-      return;
-    }
-
-    // Check cache
-    const cacheKey = buildCacheKey(
-      maxStops,
-      items.map((i) => i.id),
-      storeIds,
-      Object.fromEntries(items.map((i) => [i.id, i.quantity])),
-    );
-
-    let plan = getCachedPlan(cacheKey);
-    if (!plan) {
-      plan = computeTripPlan(items, perStorePrices, maxStops, undefined, storeNameMap);
-      setCachedPlan(cacheKey, plan);
-    }
-
-    set({ tripPlan: plan });
   },
 }));

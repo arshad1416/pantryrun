@@ -11,7 +11,10 @@ import { StoreLogo } from '../pricing/store-branding';
 export interface StoreTotal {
   storeId: string;
   storeName: string;
+  /** Cost of the items this store covers */
   total: number;
+  coveredCount: number;
+  totalCount: number;
 }
 
 interface StoreTotalBarProps {
@@ -27,7 +30,10 @@ export default function StoreTotalBar({ storeTotals, selectedStoreId, onSelectSt
   const theme = activeTheme === 'dark' ? themeColors.dark : themeColors.light;
   const isDark = activeTheme === 'dark';
 
-  const cheapestId = storeTotals[0]?.storeId;
+  // Totals are sorted coverage-first; only a store carrying the whole basket
+  // can be called cheapest — a partial total isn't comparable.
+  const first = storeTotals[0];
+  const cheapestId = first && first.coveredCount === first.totalCount ? first.storeId : null;
 
   return (
     <View style={styles.storeTotalBarContainer}>
@@ -98,6 +104,7 @@ export default function StoreTotalBar({ storeTotals, selectedStoreId, onSelectSt
                   { color: isSelected || isCheapest ? '#fff' : theme.text },
                 ]}>
                   ${st.total.toFixed(2)}
+                  {st.coveredCount < st.totalCount ? ` · ${st.coveredCount}/${st.totalCount}` : ''}
                 </Text>
               </View>
             </TouchableOpacity>

@@ -18,7 +18,8 @@ import TripPlanSheet from './TripPlanSheet';
 import type { TripPlan } from '../pricing/trip-plan';
 
 interface StopOptimizerProps {
-  items: { id: string; quantity: number }[];
+  /** Basket items (unchecked) — prices must already be eligibility-filtered */
+  items: { id: string; quantity: number; unit?: string; name?: string }[];
   perStorePrices: Record<string, Record<string, PriceResult>>;
   storeNameMap: Record<string, string>;
   selectedRouteNumStops?: number | null;
@@ -45,21 +46,28 @@ export default function StopOptimizer({
   const theme = themeColors[activeTheme];
 
   const proposals = useMemo(
-    () => computeStopProposals(items, perStorePrices, storeNameMap),
-    [items, perStorePrices, storeNameMap],
+    () => computeStopProposals(items, perStorePrices, storeNameMap, maxStops),
+    [items, perStorePrices, storeNameMap, maxStops],
   );
+
+  // "Best value" goes to the cheapest route that covers the whole basket —
+  // never to a route that's cheap because it leaves items out.
+  const bestValueNumStops = useMemo(() => {
+    let best: (typeof proposals)[number] | null = null;
+    for (const p of proposals) {
+      if (p.coveredCount !== p.totalCount) continue;
+      if (!best || p.totalCost < best.totalCost) best = p;
+    }
+    return proposals.length > 1 ? best?.numStops ?? null : null;
+  }, [proposals]);
 
   // Trip plan handler
   const handlePlanTrip = useCallback(() => {
     const itemsToPlan = fullItems ?? items.map((i) => ({ ...i, name: '', unit: '' }));
 
-    // Check cache first
-    const cacheKey = buildCacheKey(
-      maxStops,
-      itemsToPlan.map((i) => i.id),
-      Object.keys(perStorePrices),
-      Object.fromEntries(itemsToPlan.map((i) => [i.id, i.quantity])),
-    );
+    // Check cache first — the key includes every price, so a price change
+    // can't return a stale plan.
+    const cacheKey = buildCacheKey(maxStops, itemsToPlan, perStorePrices);
 
     let plan = getCachedPlan(cacheKey);
     if (!plan) {
@@ -71,8 +79,8 @@ export default function StopOptimizer({
     setShowTripSheet(true);
   }, [fullItems, items, maxStops, perStorePrices, storeNameMap]);
 
-  // Max savings is the savings of the last proposal
-  const maxSavings = proposals[proposals.length - 1]?.savingsVsOneStop ?? 0;
+  // Largest honest saving: only proposals compared against the same basket
+  const maxSavings = Math.max(0, ...proposals.map((p) => p.savingsVsOneStop ?? 0));
 
   return (
     <View style={[styles.container, { backgroundColor: theme.cardBg, borderColor: theme.border }]}>
@@ -106,8 +114,8 @@ export default function StopOptimizer({
             >
               {proposals.map((prop) => {
                 const isSelected = selectedRouteNumStops === prop.numStops;
-                // Best value is typically 2 stops when we have >= 2 stops options
-                const isBestValue = prop.numStops === 2;
+                const isBestValue = prop.numStops === bestValueNumStops;
+                const isPartial = prop.coveredCount < prop.totalCount;
 
                 return (
                   <TouchableOpacity
@@ -146,7 +154,17 @@ export default function StopOptimizer({
                     <Text style={[styles.cardStores, { color: theme.secondaryText }]} numberOfLines={2}>
                       {prop.stores.map((s) => s.storeName).join(' + ')}
                     </Text>
-                    {prop.savingsVsOneStop > 0 && (
+                    <Text style={[styles.cardStores, { color: isPartial ? theme.unassignedText : theme.secondaryText }]}>
+                      {isPartial
+                        ? `${prop.coveredCount} of ${prop.totalCount} items · ${prop.totalCount - prop.coveredCount} not priced`
+                        : `All ${prop.totalCount} items`}
+                    </Text>
+                    {prop.savingsVsOneStop === null && prop.numStops > 1 && (
+                      <Text style={[styles.cardStores, { color: theme.secondaryText }]}>
+                        Not comparable to 1 stop — different items covered
+                      </Text>
+                    )}
+                    {prop.savingsVsOneStop !== null && prop.savingsVsOneStop > 0 && (
                       <View style={[styles.savingsBadge, { backgroundColor: theme.savingsBg }]}>
                         <Text style={[styles.savingsText, { color: theme.savingsText }]}>
                           * You Save: ${prop.savingsVsOneStop.toFixed(2)}
