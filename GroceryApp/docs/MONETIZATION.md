@@ -10,8 +10,8 @@ In-App Purchase — an un-purchasable "subscription key" field invites rejection
 
 A subscription unlocking:
 
-1. **Trip Optimizer** (multi-stop savings planner — `src/pricing/stop-optimizer.ts`,
-   `trip-plan.ts`, `StopOptimizer.tsx`, `TripPlanSheet.tsx`)
+1. **Trip Optimizer** (multi-stop savings planner — `src/pricing/basket-planner.ts`,
+   `StopOptimizer.tsx`, `TripPlanSheet.tsx`; see `docs/PRICE_COMPARISON.md`)
 2. **Smart Home / voice-assistant integration** (Alexa + Google Assistant)
 
 ## Hard prerequisites — read before building

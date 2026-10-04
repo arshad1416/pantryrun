@@ -29,7 +29,7 @@ GroceryListScreen
 - **`src/screens/GroceryListScreen.tsx`** — Already calls `loadPricesForAllStores` in a `useEffect` triggered by `Object.keys(items).length`, `listId`, `isFocused`, and `availableStores` changes.
 - **`src/components/ItemRow.tsx`** — Already accepts `price?: PriceResult | null` and `priceLoading?: boolean` props.
 - **`src/components/PriceBadge.tsx`** — Fully implemented: regular price, sale price with strikethrough, unit price, source badge, loading shimmer.
-- **`src/components/StoreTotalBar.tsx`** — Per-store cart totals from `perStorePrices`.
+- ~~`src/components/StoreTotalBar.tsx`~~ — removed (was unused); per-store coverage and subtotals now come from `planBasket()` (see `PRICE_COMPARISON.md`).
 - **`src/components/StopOptimizer.tsx`** — Route optimization using `perStorePrices`.
 
 ### 2.2 Price Engine (✅ Implemented)

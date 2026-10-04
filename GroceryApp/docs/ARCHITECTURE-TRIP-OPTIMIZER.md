@@ -1,5 +1,13 @@
 # Shopping Trip Optimizer — Architecture
 
+> **Superseded (Oct 2026).** `trip-plan.ts`, `trip-plan-cache.ts` and
+> `stop-optimizer.ts` were replaced by `src/pricing/basket-planner.ts`. The
+> current rules (coverage-first ranking, pack arithmetic, offer validity,
+> held lines, merchandise-only savings, max 3 stops) are in
+> [`PRICE_COMPARISON.md`](PRICE_COMPARISON.md). This file is kept as design
+> history; the defects it shipped with are pinned in
+> `__tests__/historical-optimizer-probes.test.ts`.
+
 ## Overview
 
 The Trip Optimizer computes the optimal multi-stop shopping plan given a grocery list and per-store prices. It finds the combination of stores that minimizes total cost, assigns each item to its cheapest store within the chosen set, and reports savings vs. buying everything at the most expensive store.

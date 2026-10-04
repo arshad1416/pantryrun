@@ -24,10 +24,15 @@ on — see [Where prices come from](#-where-prices-come-from)), and a multi-stop
 ### 🗺️ Multi-Stop Route Optimizer ("Smart Splits") — requires PantryRun Plus
 - **Paid feature.** The optimizer renders only for families with an active PantryRun Plus entitlement; everyone else sees an upsell in its place.
 - It also needs price data to compare anything, and pricing is opt-in and empty by default (see below) — so a Plus subscriber who has not enabled pricing still gets no savings estimates.
-- Computes greedy multi-stop shopping routes to get the best pricing across local grocery stores.
-- Displays horizontal **Route Proposal Cards** (e.g. 1 Stop, 2 Stops, 3 Stops) with estimated subtotals, store listings, and highlighted savings.
-- Highlights the optimal compromise proposal with a **Best Value** label.
-- **Dynamic List Splits**: Tapping any route proposal splits the shopping list into stop-by-stop visit segments (e.g., `Stop 1: No Frills`, `Stop 2: Walmart`) displaying live stop subtotals and showing the best price per item for that store.
+- Compares routes of **1, 2 or 3 stores** that buy the same items. The search is exhaustive and coverage-first, so a store carrying two of ten items can never "win" on its total. Pack sizes are respected (500 g from 340 g packs = 2 packs).
+- Every store and route card shows its **coverage** (e.g. "2 of 10 items") and where its prices came from (entered by you / flyer / unverified / sample).
+- Lines that can't be compared are **held** and shown with their reason, never priced at $0. This covers unknown quantity, no offer matching a variant like GREEN grapes, and a sale-only item with no valid sale.
+- Offers are checked against the **shopping day(s)** you pick. Expired or stale offers drop out. A sale ending mid-week is shown with its end date.
+- Savings are merchandise-only (before tax, travel, fees and memberships), and are only stated between routes covering the same items. Rules: [`GroceryApp/docs/PRICE_COMPARISON.md`](GroceryApp/docs/PRICE_COMPARISON.md).
+- **Dynamic List Splits**: tapping a route splits the list into stop-by-stop sections (e.g. `Stop 1: No Frills`) with stop subtotals, plus "Not available on this route" and "Held" sections.
+
+### 📋 Checklist import
+- Paste a checklist (for example, copied out of Google Keep) and review a preview before anything is added. Checkbox state, notes and store headings (as hints) are kept. Duplicates and conflicting variants are flagged. There is no direct Keep connection: see [`GroceryApp/docs/GOOGLE_KEEP_IMPORT.md`](GroceryApp/docs/GOOGLE_KEEP_IMPORT.md) for why.
 
 ### 💲 Where prices come from
 - **A stock build shows no prices at all — pricing is opt-in.** A master privacy gate in
