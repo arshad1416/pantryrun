@@ -8,8 +8,11 @@
  *
  *  - Canonical variants: "LF", "lactose free", "lactose-free" are one
  *    attribute; "3.25%", "homo", "whole" are one fat level; "mayonnaise"
- *    is "mayo". Product names go through the same canonicalization, so
+ *    is "mayo"; retailer names for one product ("mini carrots") fold to
+ *    one phrase. Product names go through the same canonicalization, so
  *    both sides compare like with like.
+ *  - A trailing "for …" on the name ("garlic mayo for kids") says who it's
+ *    for, not what to buy: it never becomes a product requirement.
  *  - Hard attributes (lactose-free, whole, green, Jamaican, garlic, …)
  *    are always retained, even when substitutes are allowed.
  *  - "sale only" notes make the item a hold until a qualifying sale exists.
@@ -46,6 +49,9 @@ const CANONICAL_PHRASES: [RegExp, string][] = [
   [/(?:^|\s)1\s*%/g, ' onepercent '],
   [/(?:^|\s)0\s*%|\bskim(?:med)?\b|\bfat[\s-]*free\b/g, ' skim '],
   [/\bmayonnaise\b/g, ' mayo '],
+  // Same product, different retailer names. Whole phrases only: "mini"
+  // alone is too generic ("mini pretzels") to be a synonym.
+  [/\b(?:mini|baby)[\s-]+carrots?\b/g, ' baby carrots '],
 ];
 
 /**
@@ -125,6 +131,9 @@ const NOTE_REQUIREMENT_RES = [
   /\b([a-z0-9.%-]+) only\b/i,
 ];
 
+/** "… for kids" / "… for the party": who it's for, never a product word. */
+const PURPOSE_RE = /\s+for\s+.+$/i;
+
 /** Words in a note's requirement phrase that are policy, not product. */
 const POLICY_WORDS = new Set(['sale', 'brand', 'any', 'sub', 'ok', 'exact', 'exactly']);
 
@@ -134,7 +143,7 @@ const POLICY_WORDS = new Set(['sale', 'brand', 'any', 'sub', 'ok', 'exact', 'exa
  * phrases, and "must be X" / "only X" / "X only" in notes.
  */
 export function parseItemIntent(item: { name: string; notes?: string }): ItemIntent {
-  const nameTokens = extractKeywords(item.name);
+  const nameTokens = extractKeywords(item.name.replace(PURPOSE_RE, ''));
   const notes = item.notes ?? '';
   const saleOnly = SALE_ONLY_RE.test(notes);
   const substitution: SubstitutionPolicy =
