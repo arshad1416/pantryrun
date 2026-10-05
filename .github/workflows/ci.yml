@@ -142,7 +142,8 @@ jobs:
   # Every push and PR builds and boot-tests the relay for amd64 only. The
   # arm64 build used to run here under QEMU, which crashes `npm install`
   # (Illegal instruction) on Intel runner hosts — measured 20/20 — and passes
-  # on AMD ones, so it failed PRs at random. arm64 now builds natively in
+  # on AMD ones, so it failed PRs at random. (#13 pinned binfmt qemu-v7.0.0
+  # here as a stopgap; superseded.) arm64 now builds natively in
   # arm64-build.yml (main, nightly, manual, and PRs touching the relay).
   docker:
     name: Docker Build
