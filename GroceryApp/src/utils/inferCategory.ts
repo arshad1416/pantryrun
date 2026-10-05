@@ -1,11 +1,15 @@
 /**
- * Category inference — a best-guess built-in category from an item name.
- *
- * Basic keyword matching; falls back to 'other'. Intentionally simple —
- * the person can always adjust the category after the item is added.
- * Shared by voice add and checklist import.
+ * Category inference shared by voice add and list import.
  */
 
+/**
+ * Basic category inference based on item name keywords.
+ * Falls back to 'other' if no match is found.
+ *
+ * This is intentionally simple — a production system could use ML
+ * or a configurable mapping. The user can always adjust the category
+ * after the item is added.
+ */
 export function inferCategory(name: string): string {
   const lower = name.toLowerCase();
 

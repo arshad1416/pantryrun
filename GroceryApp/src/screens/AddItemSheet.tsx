@@ -6,7 +6,6 @@
  *  - Custom item input (name + quantity + unit)
  *  - Voice input: on iOS uses Alert.prompt, on Android uses a text modal
  *  - Parsed voice text pre-fills the name/quantity/unit fields
- *  - "Paste a checklist" hands off to the reviewed checklist import
  */
 
 import React, { useState, useCallback } from 'react';
@@ -42,8 +41,8 @@ interface AddItemSheetProps {
   listId: string;
   onClose: () => void;
   onItemAdded?: () => void;
-  /** Open the paste-a-checklist import (the sheet closes first). */
-  onImportChecklist?: () => void;
+  /** Open the Google Keep import sheet */
+  onImportList?: () => void;
 }
 
 // ─── Common Quick-Add Items ──────────────────────────────────────────────────
@@ -128,7 +127,7 @@ export default function AddItemSheet({
   listId,
   onClose,
   onItemAdded,
-  onImportChecklist,
+  onImportList,
 }: AddItemSheetProps) {
   // Store
   const addItem = useGroceryStore((s) => s.addItem);
@@ -455,20 +454,6 @@ export default function AddItemSheet({
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
         >
-          {onImportChecklist && (
-            <TouchableOpacity
-              style={[styles.importBtn, { borderColor: theme.border }]}
-              onPress={() => {
-                handleClose();
-                onImportChecklist();
-              }}
-              disabled={adding}
-              accessibilityRole="button"
-            >
-              <Text style={[styles.importBtnText, { color: theme.primary }]}>📋 Paste a checklist (e.g. from Google Keep)</Text>
-            </TouchableOpacity>
-          )}
-
           {/* ── Custom Item Input ─────────────────────────────────────── */}
           <View style={[styles.customSection, { backgroundColor: theme.cardBg, borderColor: theme.border }]}>
             <Text style={[styles.inputLabel, { color: theme.secondaryText }]}>ITEM NAME</Text>
@@ -647,6 +632,20 @@ export default function AddItemSheet({
               <Text style={styles.voiceBtnText}>📷 Scan Barcode</Text>
             </TouchableOpacity>
           </View>
+          {onImportList && (
+            <TouchableOpacity
+              style={[styles.importBtn, { borderColor: theme.border, backgroundColor: theme.cardBg }]}
+              onPress={() => {
+                resetForm();
+                onImportList();
+              }}
+              disabled={adding}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+            >
+              <Text style={[styles.importBtnText, { color: theme.text }]}>📋 Import from Google Keep</Text>
+            </TouchableOpacity>
+          )}
 
           {/* Voice parse result indicator */}
           {voiceParsed && (
@@ -841,17 +840,6 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     marginTop: 16,
   },
-  importBtn: {
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingVertical: 10,
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  importBtnText: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
   customSection: {
     borderRadius: 12,
     borderWidth: 1,
@@ -982,6 +970,17 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 14,
     gap: 6,
+  },
+  importBtn: {
+    marginTop: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    padding: 14,
+    alignItems: 'center',
+  },
+  importBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   voiceBtnDisabled: {
     flex: 1,

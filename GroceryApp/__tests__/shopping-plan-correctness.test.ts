@@ -7,7 +7,7 @@
  *
  * Fixture: __tests__/fixtures/waterdown-oct-2026.ts (reconstructed — see its
  * header). Clock pinned to 4 Oct 2026, America/Toronto. G (import) lives in
- * checklist-import.test.ts.
+ * keep-import-planning.test.ts (and the importer's own keep-import.test.ts).
  *
  * Run: npx jest __tests__/shopping-plan-correctness.test.ts
  */

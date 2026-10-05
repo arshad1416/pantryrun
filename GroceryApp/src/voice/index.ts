@@ -22,7 +22,7 @@ import { Platform } from 'react-native';
 import type { VoiceInput, ParsedItem, VoicePlatform } from './types';
 import { parseVoiceText } from './nlp';
 import { isSiriAvailable, donateInteraction } from './siri';
-import { inferCategory } from '../utils/category';
+import { inferCategory } from '../utils/inferCategory';
 
 // ─── VoiceService ────────────────────────────────────────────────────────────
 
@@ -141,7 +141,6 @@ export class VoiceService {
     return 'ifttt';
   }
 }
-
 
 // ─── Hook: useVoiceInput ─────────────────────────────────────────────────────
 

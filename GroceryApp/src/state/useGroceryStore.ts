@@ -83,7 +83,11 @@ export interface GroceryState {
 
   // Actions
   loadItems: (listId: string) => Promise<void>;
-  addItem: (item: Omit<GroceryItem, 'id' | 'createdAt' | 'updatedAt' | 'version' | 'syncStatus' | 'isDeleted' | 'deletedAt'>) => Promise<GroceryItem>;
+  /** `silent` skips the per-item family notification (bulk import). */
+  addItem: (
+    item: Omit<GroceryItem, 'id' | 'createdAt' | 'updatedAt' | 'version' | 'syncStatus' | 'isDeleted' | 'deletedAt'>,
+    opts?: { silent?: boolean },
+  ) => Promise<GroceryItem>;
   updateItem: (id: string, changes: Partial<GroceryItem>) => Promise<void>;
   toggleChecked: (id: string) => Promise<void>;
   deleteItem: (id: string) => Promise<void>;
@@ -126,7 +130,7 @@ export const useGroceryStore = create<GroceryState>((set, get) => ({
     }
   },
 
-  addItem: async (itemData) => {
+  addItem: async (itemData, opts) => {
     const now = Date.now();
     const id = await generateUUID();
     const newItem: GroceryItem = {
@@ -149,24 +153,26 @@ export const useGroceryStore = create<GroceryState>((set, get) => ({
     }));
 
     // Fire family notification (best-effort, non-blocking)
-    try {
-      const { sendFamilyNotification } = await import('../notifications/NotificationManager');
-      const { getListMeta } = await import('../sync/yjs-adapter');
-      const encryptionKey = syncManager.getEncryptionKey();
-      if (encryptionKey) {
-        const listName = (getListMeta(listId).get('name') as string) || 'Grocery List';
-        sendFamilyNotification(
-          'item_added',
-          listId,
-          listName,
-          newItem.id,
-          newItem.name,
-          newItem.category,
-          encryptionKey,
-        ).catch(() => {}); // fire-and-forget
+    if (!opts?.silent) {
+      try {
+        const { sendFamilyNotification } = await import('../notifications/NotificationManager');
+        const { getListMeta } = await import('../sync/yjs-adapter');
+        const encryptionKey = syncManager.getEncryptionKey();
+        if (encryptionKey) {
+          const listName = (getListMeta(listId).get('name') as string) || 'Grocery List';
+          sendFamilyNotification(
+            'item_added',
+            listId,
+            listName,
+            newItem.id,
+            newItem.name,
+            newItem.category,
+            encryptionKey,
+          ).catch(() => {}); // fire-and-forget
+        }
+      } catch {
+        // Notification system not available — non-critical
       }
-    } catch {
-      // Notification system not available — non-critical
     }
 
     // Fire price lookup (debounced, fire-and-forget — never blocks add)

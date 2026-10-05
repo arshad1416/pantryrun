@@ -33,9 +33,9 @@ import { useGroceryStore } from '../state/useGroceryStore';
 import { getListMeta, yjsSweepExpiredClaims } from '../sync/yjs-adapter';
 import type { RootStackParamList } from '../navigation/deepLinks';
 import AddItemSheet from './AddItemSheet';
+import ImportListSheet from './ImportListSheet';
 import FlyerScanFlow from '../components/FlyerScanFlow';
 import StopOptimizer from '../components/StopOptimizer';
-import ChecklistImportSheet from '../components/ChecklistImportSheet';
 import UndoToast from '../components/UndoToast';
 import { usePriceStore } from '../pricing/price-store';
 import { useThemeStore, useActiveTheme } from '../state/useThemeStore';
@@ -159,7 +159,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
   // Local state
   const [searchQuery, setSearchQuery] = useState('');
   const [showAddSheet, setShowAddSheet] = useState(false);
-  const [showImport, setShowImport] = useState(false);
+  const [showImportSheet, setShowImportSheet] = useState(false);
   const [showFlyerScan, setShowFlyerScan] = useState(false);
   const [listName, setListName] = useState('Grocery List');
   const [gotItExpanded, setGotItExpanded] = useState(false);
@@ -167,6 +167,8 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     visible: boolean;
     message: string;
     itemId: string;
+    /** Set for an import toast: Undo removes these items instead of unchecking */
+    importedIds?: string[];
   } | null>(null);
   const [selectedStoreId, setSelectedStoreId] = useState<string | null>(null);
   const [selectedRouteNumStops, setSelectedRouteNumStops] = useState<number | null>(null);
@@ -622,11 +624,14 @@ export default function GroceryListScreen({ route, navigation }: Props) {
   const handleUndo = useCallback(() => {
     if (!toastState) return;
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    toggleChecked(toastState.itemId).catch((err: Error) => {
+    const undo = toastState.importedIds
+      ? Promise.all(toastState.importedIds.map((id) => deleteItem(id)))
+      : toggleChecked(toastState.itemId);
+    undo.catch((err: Error) => {
       Alert.alert('Something went wrong', friendlyError(err));
     });
     setToastState(null);
-  }, [toastState, toggleChecked]);
+  }, [toastState, toggleChecked, deleteItem]);
 
   const handleDismissToast = useCallback(() => {
     setToastState(null);
@@ -1286,17 +1291,9 @@ export default function GroceryListScreen({ route, navigation }: Props) {
       </View>
 
       {/* Add Item Sheet */}
-      <ChecklistImportSheet
-        visible={showImport}
-        listId={listId}
-        onClose={() => setShowImport(false)}
-      />
-
       <AddItemSheet
         visible={showAddSheet}
         listId={listId}
-        // iOS can't present a modal while another is still dismissing.
-        onImportChecklist={() => setTimeout(() => setShowImport(true), 400)}
         onClose={() => {
           setShowAddSheet(false);
           setActiveTab('lists');
@@ -1304,6 +1301,30 @@ export default function GroceryListScreen({ route, navigation }: Props) {
         onItemAdded={() => {
           setShowAddSheet(false);
           setActiveTab('lists');
+        }}
+        onImportList={() => {
+          setShowAddSheet(false);
+          setShowImportSheet(true);
+        }}
+      />
+
+      {/* Google Keep import (paste) */}
+      <ImportListSheet
+        visible={showImportSheet}
+        listId={listId}
+        onClose={() => {
+          setShowImportSheet(false);
+          setActiveTab('lists');
+        }}
+        onImported={(ids) => {
+          setShowImportSheet(false);
+          setActiveTab('lists');
+          setToastState({
+            visible: true,
+            message: `Imported ${ids.length} item${ids.length === 1 ? '' : 's'} from Keep`,
+            itemId: '',
+            importedIds: ids,
+          });
         }}
       />
 
