@@ -169,7 +169,7 @@ export default function ImportListSheet({ visible, listId, onClose, onImported }
                   <Text style={[styles.previewName, { color: theme.text }]} numberOfLines={1}>
                     {item.checked ? '☑ ' : ''}
                     {item.name}
-                    {item.quantity !== 1 || item.unit !== 'each' ? `  ×${item.quantity}${item.unit !== 'each' ? ` ${item.unit}` : ''}` : ''}
+                    {item.quantity !== 1 || (item.unit && item.unit !== 'each') ? `  ×${item.quantity}${item.unit && item.unit !== 'each' ? ` ${item.unit}` : ''}` : ''}
                   </Text>
                   {item.notes ? (
                     <Text style={[styles.previewNote, { color: theme.secondaryText }]} numberOfLines={1}>

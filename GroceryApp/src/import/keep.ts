@@ -65,6 +65,7 @@ const KNOWN_STORES = [
   'Superstore', 'Farm Boy', "Longo's", 'Shoppers Drug Mart', 'Shoppers',
   'T&T', 'Giant Tiger', 'Dollarama', 'Bulk Barn', 'Nations', 'Adonis',
   "Denninger's", 'Starsky', 'Nations Fresh Foods', 'Healthy Planet',
+  'A1 Cash & Carry', 'A1 Cash and Carry',
 ];
 
 function storeKey(s: string): string {
@@ -233,7 +234,9 @@ export function parseListLine(text: string): { name: string; quantity: number; u
     return { name: capitalize(leadingCount[2].trim()), quantity: parseFloat(leadingCount[1]), unit: 'each' };
   }
 
-  return { name: capitalize(line), quantity: 1, unit: 'each' };
+  // Nothing written: one of whatever the store sells it in (the app's
+  // unit-less convention), not one "each" — "garlic mayo" is a jar.
+  return { name: capitalize(line), quantity: 1, unit: '' };
 }
 
 // ─── Item text ──────────────────────────────────────────────────────────────
@@ -255,6 +258,12 @@ function splitParenthetical(text: string): { text: string; note?: string } {
     text: stripped.replace(/\s+/g, ' ').trim(),
     ...(notes.length > 0 ? { note: notes.join('; ') } : {}),
   };
+}
+
+/** "ketchup - sale only", "pods — sale only" → name + note (a trailing number stays a quantity) */
+function splitDashNote(text: string): { text: string; note?: string } {
+  const m = text.match(/^(.*?\p{L}.*?)\s+[-—–]\s+(\D.*)$/u);
+  return m ? { text: m[1].trim(), note: m[2].trim() } : { text };
 }
 
 /** Lines that are clearly not groceries: links, lone emoji/punctuation. */
@@ -304,7 +313,10 @@ export function parseKeepList(input: string, opts: KeepImportOptions = {}): Keep
       continue;
     }
 
-    const { text, note } = splitParenthetical(line.text);
+    const paren = splitParenthetical(line.text);
+    const dash = splitDashNote(paren.text);
+    const text = dash.text;
+    const note = [paren.note, dash.note].filter(Boolean).join('; ') || undefined;
     const parsed = parseListLine(text);
     if (!/[\p{L}\p{N}]/u.test(parsed.name)) {
       skipped.push({ text: line.text, reason: 'not_an_item' });

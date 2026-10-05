@@ -1,86 +1,104 @@
 /**
  * StopOptimizer — collapsible multi-stop route optimization UI.
  *
- * Displays proposals below the StoreTotalBar when available.
- * Always renders MaxStopsStepper and Plan My Trip button so the
- * user can plan a trip even with a single-store proposal.
+ * Renders route proposals computed by GroceryListScreen from the same
+ * basket analysis as the store cards, plus the trip-plan controls:
+ * stop cap, shopping day, confirmed memberships and whether "sale only"
+ * holds are needed now. The trip sheet's plan is derived live from the
+ * current analysis — never a snapshot — so an edit, refresh or clock tick
+ * while it's open can't leave a stale recommendation on screen.
  */
 
 import React, { useState, useMemo, useCallback } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
-import type { PriceResult } from '../pricing/types';
-import { computeStopProposals } from '../pricing/stop-optimizer';
-import { computeTripPlan } from '../pricing/trip-plan';
-import { buildCacheKey, getCachedPlan, setCachedPlan } from '../pricing/trip-plan-cache';
+import { solvePlan, type BasketAnalysis, type BasketItem } from '../pricing/basket';
+import type { StopProposal } from '../pricing/stop-optimizer';
+import { toTripPlan } from '../pricing/trip-plan';
 import { useActiveTheme } from '../state/useThemeStore';
 import MaxStopsStepper from './MaxStopsStepper';
 import TripPlanSheet from './TripPlanSheet';
-import type { TripPlan } from '../pricing/trip-plan';
+import { themeColors } from './groceryTheme';
 
-interface StopOptimizerProps {
-  /** Basket items (unchecked) — prices must already be eligibility-filtered */
-  items: { id: string; quantity: number; unit?: string; name?: string }[];
-  perStorePrices: Record<string, Record<string, PriceResult>>;
-  storeNameMap: Record<string, string>;
-  selectedRouteNumStops?: number | null;
-  onSelectRouteNumStops?: (numStops: number | null) => void;
-  /** Full item data (name + unit) for trip plan computation */
-  fullItems?: { id: string; name: string; quantity: number; unit: string }[];
+export type ShoppingDay = 'today' | 'tomorrow' | 'week';
+
+export interface PlanOptions {
+  maxStops: number;
+  shoppingDay: ShoppingDay;
+  /** Confirmed memberships, e.g. ['costco'] */
+  memberships: string[];
+  /** "Sale only" holds are needed now — fulfilment is incomplete without them */
+  requireHeld: boolean;
 }
 
-import { themeColors } from './groceryTheme';
+interface StopOptimizerProps {
+  /** Basket lines the analysis was built from */
+  items: BasketItem[];
+  analysis: BasketAnalysis;
+  proposals: StopProposal[];
+  storeNameMap: Record<string, string>;
+  options: PlanOptions;
+  onChangeOptions: (options: PlanOptions) => void;
+  /** Clock the analysis was evaluated at */
+  now: number;
+  selectedRouteNumStops?: number | null;
+  onSelectRouteNumStops?: (numStops: number | null) => void;
+}
+
+const DAY_LABELS: Record<ShoppingDay, string> = {
+  today: 'Today',
+  tomorrow: 'Tomorrow',
+  week: 'Next 7 days',
+};
 
 export default function StopOptimizer({
   items,
-  perStorePrices,
+  analysis,
+  proposals,
   storeNameMap,
+  options,
+  onChangeOptions,
+  now,
   selectedRouteNumStops = null,
   onSelectRouteNumStops,
-  fullItems,
 }: StopOptimizerProps) {
   const [expanded, setExpanded] = useState(false);
-  const [maxStops, setMaxStops] = useState(3);
-  const [tripPlan, setTripPlan] = useState<TripPlan | null>(null);
   const [showTripSheet, setShowTripSheet] = useState(false);
   const activeTheme = useActiveTheme();
   const theme = themeColors[activeTheme];
-
-  const proposals = useMemo(
-    () => computeStopProposals(items, perStorePrices, storeNameMap, maxStops),
-    [items, perStorePrices, storeNameMap, maxStops],
+  const setOption = useCallback(
+    <K extends keyof PlanOptions>(key: K, value: PlanOptions[K]) => onChangeOptions({ ...options, [key]: value }),
+    [options, onChangeOptions],
   );
 
-  // "Best value" goes to the cheapest route that covers the whole basket —
+  // Live: recomputed whenever the analysis (prices, list, rules, clock) or options change.
+  const tripPlan = useMemo(() => {
+    if (!showTripSheet) return null;
+    const ctx = { requireHeldItems: options.requireHeld };
+    return toTripPlan(
+      items,
+      solvePlan(analysis, options.maxStops, ctx),
+      solvePlan(analysis, 1, ctx),
+      storeNameMap,
+      now,
+    );
+  }, [showTripSheet, items, analysis, options.maxStops, options.requireHeld, storeNameMap, now]);
+
+  // "Best value" goes to the cheapest route that leaves nothing unsupplied —
   // never to a route that's cheap because it leaves items out.
   const bestValueNumStops = useMemo(() => {
-    let best: (typeof proposals)[number] | null = null;
+    let best: StopProposal | null = null;
     for (const p of proposals) {
-      if (p.coveredCount !== p.totalCount) continue;
+      if (p.plan.fulfillment === 'incomplete') continue;
       if (!best || p.totalCost < best.totalCost) best = p;
     }
     return proposals.length > 1 ? best?.numStops ?? null : null;
   }, [proposals]);
 
-  // Trip plan handler
-  const handlePlanTrip = useCallback(() => {
-    const itemsToPlan = fullItems ?? items.map((i) => ({ ...i, name: '', unit: '' }));
-
-    // Check cache first — the key includes every price, so a price change
-    // can't return a stale plan.
-    const cacheKey = buildCacheKey(maxStops, itemsToPlan, perStorePrices);
-
-    let plan = getCachedPlan(cacheKey);
-    if (!plan) {
-      plan = computeTripPlan(itemsToPlan, perStorePrices, maxStops, undefined, storeNameMap);
-      setCachedPlan(cacheKey, plan);
-    }
-
-    setTripPlan(plan);
-    setShowTripSheet(true);
-  }, [fullItems, items, maxStops, perStorePrices, storeNameMap]);
-
-  // Largest honest saving: only proposals compared against the same basket
+  // Largest honest saving: only proposals compared against the same lines
   const maxSavings = Math.max(0, ...proposals.map((p) => p.savingsVsOneStop ?? 0));
+  const best = proposals[proposals.length - 1];
+  const noCompletePlan = proposals.length > 0 && proposals.every((p) => p.plan.fulfillment === 'incomplete');
+  const costcoConfirmed = options.memberships.includes('costco');
 
   return (
     <View style={[styles.container, { backgroundColor: theme.cardBg, borderColor: theme.border }]}>
@@ -91,10 +109,10 @@ export default function StopOptimizer({
       >
         <View style={styles.headerLeft}>
           <Text style={[styles.headerTitle, { color: theme.text }]}>🗺️ Smart Route Optimizer</Text>
-          {maxSavings > 0 && !expanded && (
+          {maxSavings > 0 && !expanded && !noCompletePlan && (
             <View style={[styles.savingBadgeHeader, { backgroundColor: theme.savingsBg }]}>
               <Text style={[styles.savingBadgeTextHeader, { color: theme.savingsText }]}>
-                Save up to ${maxSavings.toFixed(2)}!
+                Save up to ${maxSavings.toFixed(2)} vs 1 stop
               </Text>
             </View>
           )}
@@ -106,6 +124,16 @@ export default function StopOptimizer({
 
       {expanded && (
         <View style={[styles.body, { borderTopColor: theme.border }]}>
+          {noCompletePlan && best && (
+            <Text style={[styles.notice, { color: theme.unassignedText }]}>
+              No complete plan with these stores — {best.missingItemIds.length} item
+              {best.missingItemIds.length === 1 ? '' : 's'} can't be priced
+              {options.requireHeld && best.heldItemIds.length > 0
+                ? ` and ${best.heldItemIds.length} held for a sale`
+                : ''}
+              . Totals below are partial and not a cheapest-basket claim.
+            </Text>
+          )}
           {proposals.length > 0 && (
             <ScrollView
               horizontal
@@ -115,7 +143,9 @@ export default function StopOptimizer({
               {proposals.map((prop) => {
                 const isSelected = selectedRouteNumStops === prop.numStops;
                 const isBestValue = prop.numStops === bestValueNumStops;
-                const isPartial = prop.coveredCount < prop.totalCount;
+                const isIncomplete = prop.plan.fulfillment === 'incomplete';
+                const missing = prop.missingItemIds.length;
+                const held = prop.heldItemIds.length;
 
                 return (
                   <TouchableOpacity
@@ -138,7 +168,7 @@ export default function StopOptimizer({
                     {isBestValue && (
                       <View style={[styles.bestValueBadge, { backgroundColor: theme.bestValueBg }]}>
                         <Text style={[styles.bestValueText, { color: theme.bestValueText }]}>
-                          BEST VALUE
+                          {prop.plan.claim === 'verified' ? 'BEST VALUE' : 'LOWEST ESTIMATE'}
                         </Text>
                       </View>
                     )}
@@ -146,7 +176,7 @@ export default function StopOptimizer({
                       {prop.numStops} {prop.numStops === 1 ? 'STOP' : 'STOPS'}
                     </Text>
                     <Text style={[styles.cardTotal, { color: theme.text }]}>
-                      Est. Total:{' '}
+                      {isIncomplete ? 'Partial: ' : prop.plan.claim === 'verified' ? 'Total: ' : 'Est. Total: '}
                       <Text style={[styles.bold, { color: theme.text }]}>
                         ${prop.totalCost.toFixed(2)}
                       </Text>
@@ -154,20 +184,20 @@ export default function StopOptimizer({
                     <Text style={[styles.cardStores, { color: theme.secondaryText }]} numberOfLines={2}>
                       {prop.stores.map((s) => s.storeName).join(' + ')}
                     </Text>
-                    <Text style={[styles.cardStores, { color: isPartial ? theme.unassignedText : theme.secondaryText }]}>
-                      {isPartial
-                        ? `${prop.coveredCount} of ${prop.totalCount} items · ${prop.totalCount - prop.coveredCount} not priced`
-                        : `All ${prop.totalCount} items`}
+                    <Text style={[styles.cardStores, { color: missing > 0 ? theme.unassignedText : theme.secondaryText }]}>
+                      {`${prop.coveredCount} of ${prop.totalCount} items priced`}
+                      {held > 0 ? ` · ${held} held (sale only)` : ''}
+                      {missing > 0 ? ` · ${missing} not priced` : ''}
                     </Text>
                     {prop.savingsVsOneStop === null && prop.numStops > 1 && (
                       <Text style={[styles.cardStores, { color: theme.secondaryText }]}>
-                        Not comparable to 1 stop — different items covered
+                        Savings unavailable — 1 stop prices different items
                       </Text>
                     )}
                     {prop.savingsVsOneStop !== null && prop.savingsVsOneStop > 0 && (
                       <View style={[styles.savingsBadge, { backgroundColor: theme.savingsBg }]}>
                         <Text style={[styles.savingsText, { color: theme.savingsText }]}>
-                          * You Save: ${prop.savingsVsOneStop.toFixed(2)}
+                          * Saves ${prop.savingsVsOneStop.toFixed(2)} vs 1 stop
                         </Text>
                       </View>
                     )}
@@ -176,15 +206,59 @@ export default function StopOptimizer({
               })}
             </ScrollView>
           )}
-          {/* Max stops stepper + Plan My Trip button */}
+          {/* Plan controls + Plan My Trip button */}
           <View style={styles.planSection}>
             <Text style={[styles.planLabel, { color: theme.secondaryText }]}>
               Max stops:
             </Text>
-            <MaxStopsStepper value={maxStops} onChange={setMaxStops} />
+            <MaxStopsStepper value={options.maxStops} onChange={(n) => setOption('maxStops', n)} />
+            <Text style={[styles.planLabel, { color: theme.secondaryText }]}>
+              Shopping:
+            </Text>
+            <View style={styles.chipRow}>
+              {(Object.keys(DAY_LABELS) as ShoppingDay[]).map((day) => {
+                const active = options.shoppingDay === day;
+                return (
+                  <TouchableOpacity
+                    key={day}
+                    style={[styles.chip, { borderColor: active ? theme.primary : theme.border, backgroundColor: active ? theme.primary : 'transparent' }]}
+                    onPress={() => setOption('shoppingDay', day)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                  >
+                    <Text style={[styles.chipText, { color: active ? '#FFFFFF' : theme.text }]}>{DAY_LABELS[day]}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <View style={styles.chipRow}>
+              <TouchableOpacity
+                style={[styles.chip, { borderColor: costcoConfirmed ? theme.primary : theme.border }]}
+                onPress={() => setOption(
+                  'memberships',
+                  costcoConfirmed ? options.memberships.filter((m) => m !== 'costco') : [...options.memberships, 'costco'],
+                )}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: costcoConfirmed }}
+              >
+                <Text style={[styles.chipText, { color: theme.text }]}>
+                  {costcoConfirmed ? '☑' : '☐'} I have a Costco membership
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.chip, { borderColor: options.requireHeld ? theme.primary : theme.border }]}
+                onPress={() => setOption('requireHeld', !options.requireHeld)}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: options.requireHeld }}
+              >
+                <Text style={[styles.chipText, { color: theme.text }]}>
+                  {options.requireHeld ? '☑' : '☐'} Need "sale only" items now
+                </Text>
+              </TouchableOpacity>
+            </View>
             <TouchableOpacity
               style={[styles.planButton, { backgroundColor: theme.primary }]}
-              onPress={handlePlanTrip}
+              onPress={() => setShowTripSheet(true)}
               activeOpacity={0.8}
             >
               <Text style={styles.planButtonText}>Plan My Trip</Text>
@@ -304,6 +378,28 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     paddingTop: 4,
     gap: 10,
+  },
+  notice: {
+    fontSize: 12,
+    lineHeight: 16,
+    paddingHorizontal: 14,
+    paddingBottom: 8,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  chip: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  chipText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   planLabel: {
     fontSize: 12,

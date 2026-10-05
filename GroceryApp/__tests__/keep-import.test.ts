@@ -10,7 +10,7 @@
 
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { parseKeepList, parseListLine, MAX_IMPORT_ITEMS } from '../src/import/keep';
-import { parseItemConstraints } from '../src/pricing/basket';
+import { parseItemIntent as parseItemConstraints } from '../src/pricing/intent';
 
 const names = (r: ReturnType<typeof parseKeepList>) => r.items.map((i) => i.name);
 

@@ -4,9 +4,12 @@
  * Displays:
  *  - Per-stop sections: store name, items with line totals and where each
  *    price came from, subtotal
- *  - Total row with how many items it covers, and savings vs. the best
- *    single-store trip only when that trip covers the same items
- *  - "Unassigned" section for items without an eligible price
+ *  - Each line's evidence, amount bought and arithmetic ("2 × $2.99 · 680 g")
+ *  - "Held" section for sale-only items with no qualifying sale
+ *  - "Not in this total" section for items without a usable offer, with why
+ *  - Total row that says whether the plan is complete, and whether it is a
+ *    verified result or an estimate; merchandise savings vs. the best
+ *    single-store trip only when that trip prices exactly the same lines
  */
 
 import React, { useRef } from 'react';
@@ -22,7 +25,8 @@ import {
   Dimensions,
 } from 'react-native';
 import { useActiveTheme } from '../state/useThemeStore';
-import type { TripPlan } from '../pricing/trip-plan';
+import type { TripPlan, TripPlanItem } from '../pricing/trip-plan';
+import { describeReason } from '../pricing/basket';
 import { navigateToStore } from '../utils/storeNavigation';
 import { StoreLogo } from '../pricing/store-branding';
 
@@ -70,8 +74,19 @@ export default function TripPlanSheet({
   ).current;
 
   if (!plan) return null;
-  const totalItems =
-    plan.stops.reduce((n, stop) => n + stop.items.length, 0) + plan.unassigned.length;
+  const qtyLabel = (item: TripPlanItem) =>
+    item.quantity === null ? ' · qty ?' : item.quantity !== 1 || item.unit ? ` ×${item.quantity}${item.unit ? ` ${item.unit}` : ''}` : '';
+  const totalLabel =
+    plan.fulfillment === 'complete' ? (plan.claim === 'verified' ? 'Total' : 'Estimated Total')
+      : plan.fulfillment === 'complete_with_holds'
+        ? `${plan.claim === 'verified' ? 'Total' : 'Estimated Total'} (${plan.costedCount} of ${plan.totalCount}; ${plan.held.length} held)`
+        : `Partial Total (${plan.costedCount} of ${plan.totalCount} items)`;
+  const claimNote =
+    plan.claim === 'verified'
+      ? 'Cheapest plan for at most this many stores, from verified prices.'
+      : plan.claim === 'estimate'
+        ? 'Estimate — some prices are unverified (crowd-reported, last-known, or branch, channel or stock unknown).'
+        : 'Not a complete basket, so it is not a cheapest-basket result.';
 
   return (
     <Modal
@@ -147,18 +162,19 @@ export default function TripPlanSheet({
                     <View style={styles.itemCell}>
                       <Text style={[styles.itemName, { color: theme.text }]} numberOfLines={1}>
                         {item.itemName}
-                        {item.quantity > 1 || item.unit ? ` ×${item.quantity}${item.unit ? ` ${item.unit}` : ''}` : ''}
+                        {qtyLabel(item)}
                       </Text>
-                      {(item.evidence || item.quantityAssumed) && (
-                        <Text style={[styles.itemEvidence, { color: theme.secondaryText }]} numberOfLines={1}>
-                          {[item.evidence, item.quantityAssumed ? 'qty assumed: 1 pkg' : null]
-                            .filter(Boolean)
-                            .join(' · ')}
-                        </Text>
-                      )}
+                      <Text style={[styles.itemEvidence, { color: theme.secondaryText }]} numberOfLines={2}>
+                        {[
+                          item.evidence,
+                          item.breakdown,
+                          item.purchased ? `buys ${item.purchased}` : null,
+                          item.verified ? null : 'unverified',
+                        ].filter(Boolean).join(' · ')}
+                      </Text>
                     </View>
                     <Text style={[styles.itemPrice, { color: theme.text }]}>
-                      ${item.lineTotal.toFixed(2)}
+                      ${(item.lineTotal ?? 0).toFixed(2)}
                     </Text>
                   </View>
                 ))}
@@ -179,6 +195,26 @@ export default function TripPlanSheet({
               </View>
             ))}
 
+            {/* Held: sale only, no qualifying sale */}
+            {plan.held.length > 0 && (
+              <View
+                style={[
+                  styles.unassignedCard,
+                  { backgroundColor: theme.stopBg, borderColor: theme.border },
+                ]}
+              >
+                <Text style={[styles.unassignedTitle, { color: theme.text }]}>
+                  ⏸ Held — sale only, no qualifying sale
+                </Text>
+                {plan.held.map((item) => (
+                  <Text key={item.itemId} style={[styles.unassignedItem, { color: theme.secondaryText }]}>
+                    • {item.itemName}{qtyLabel(item)}
+                    {item.reasons?.length ? ` — ${item.reasons.map(describeReason).join(', ')}` : ''}
+                  </Text>
+                ))}
+              </View>
+            )}
+
             {/* Unassigned */}
             {plan.unassigned.length > 0 && (
               <View
@@ -191,15 +227,15 @@ export default function TripPlanSheet({
                 ]}
               >
                 <Text style={[styles.unassignedTitle, { color: theme.unassignedText }]}>
-                  ⚠️ Not in this total — no eligible price
+                  ⚠️ Not in this total — no usable price
                 </Text>
                 {plan.unassigned.map((item) => (
                   <Text
                     key={item.itemId}
                     style={[styles.unassignedItem, { color: theme.unassignedText }]}
                   >
-                    • {item.itemName}
-                    {item.quantity > 1 ? ` ×${item.quantity}` : ''}
+                    • {item.itemName}{qtyLabel(item)}
+                    {item.reasons?.length ? ` — ${item.reasons.map(describeReason).join(', ')}` : ''}
                   </Text>
                 ))}
               </View>
@@ -209,25 +245,26 @@ export default function TripPlanSheet({
             <View style={[styles.totalCard, { borderColor: theme.border }]}>
               <View style={styles.totalRow}>
                 <Text style={[styles.totalLabel, { color: theme.secondaryText }]}>
-                  {plan.unassigned.length > 0
-                    ? `Estimated Total (${totalItems - plan.unassigned.length} of ${totalItems} items)`
-                    : 'Estimated Total'}
+                  {totalLabel}
                 </Text>
                 <Text style={[styles.totalValue, { color: theme.text }]}>
                   ${plan.totalCost.toFixed(2)}
                 </Text>
               </View>
-              {!plan.savingsComparable && plan.numStops > 1 && (
+              <Text style={[styles.savingsLabel, { color: theme.secondaryText, marginTop: 6 }]}>
+                {claimNote}
+              </Text>
+              {plan.savings === null && plan.numStops > 1 && (
                 <Text style={[styles.savingsLabel, { color: theme.secondaryText, marginTop: 6 }]}>
-                  No single store carries the same items, so there's no 1-stop price to compare.
+                  Savings unavailable — no single store prices the same items.
                 </Text>
               )}
-              {plan.savingsComparable && plan.savings > 0 && (
+              {plan.savings !== null && plan.numStops > 1 && (
                 <View
                   style={[styles.savingsRow, { backgroundColor: theme.savingsBg }]}
                 >
                   <Text style={[styles.savingsLabel, { color: theme.savingsText }]}>
-                    💰 You save
+                    💰 vs best single store (groceries only, travel not included)
                   </Text>
                   <Text style={[styles.savingsValue, { color: theme.savingsText }]}>
                     ${plan.savings.toFixed(2)}

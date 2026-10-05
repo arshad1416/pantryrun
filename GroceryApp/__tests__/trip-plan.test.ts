@@ -6,11 +6,12 @@
  * through the UI). Pure algorithm tests:
  *  - Empty items / empty store sets → zeroed shape
  *  - Zero relevant stores → same zeroed shape
- *  - Unpriced items land in unassigned with price: 0 (not dropped)
+ *  - Unpriced items land in unassigned with price: null (not dropped, never $0)
  *  - maxStops clamps via Math.min(maxStops, relevantStores.length)
  *  - Exact enumeration at ≤7 relevant stores vs greedy above 7
  *  - Greedy result no worse than the best single store (8-store case)
- *  - Savings = best single-store trip − optimized total, floored at 0
+ *  - Savings = best single-store trip − optimized total; null without a
+ *    comparable baseline (never a false $0)
  *  - Quantity multiplies into totalCost and each stop's subtotal
  *
  * Run: npx jest __tests__/trip-plan.test.ts
@@ -49,13 +50,19 @@ function makeItem(
   return { id, name: id, quantity, unit };
 }
 
-/** The zeroed TripPlan shape the early returns must produce. */
+/** The empty TripPlan shape: nothing costed, no savings figure, no claim. */
 function expectZeroedShape(plan: TripPlan, expectedUnassigned: number): void {
   expect(plan.stops).toEqual([]);
   expect(plan.unassigned).toHaveLength(expectedUnassigned);
   expect(plan.totalCost).toBe(0);
-  expect(plan.savings).toBe(0);
+  expect(plan.savings).toBeNull();
   expect(plan.numStops).toBe(0);
+  expect(plan.claim).toBe('none');
+}
+
+/** An uncosted line: no price, no line total (never coerced to 0). */
+function unpriced(itemId: string, quantity: number, unit: string) {
+  return { itemId, itemName: itemId, quantity, price: null, unit, lineTotal: null };
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -72,13 +79,13 @@ describe('computeTripPlan — empty inputs return the zeroed shape', () => {
     expectZeroedShape(plan, 0);
   });
 
-  it('returns items as unassigned (price 0) when the store set is empty', () => {
+  it('returns items as unassigned (price null) when the store set is empty', () => {
     const items = [makeItem('milk', 2), makeItem('eggs', 1)];
     const plan = computeTripPlan(items, {});
     expectZeroedShape(plan, 2);
     expect(plan.unassigned).toEqual([
-      { itemId: 'milk', itemName: 'milk', quantity: 2, price: 0, unit: 'ea', lineTotal: 0 },
-      { itemId: 'eggs', itemName: 'eggs', quantity: 1, price: 0, unit: 'ea', lineTotal: 0 },
+      { ...unpriced('milk', 2, 'ea'), reasons: ['no_offer'] },
+      { ...unpriced('eggs', 1, 'ea'), reasons: ['no_offer'] },
     ]);
   });
 
@@ -100,14 +107,7 @@ describe('computeTripPlan — zero relevant stores returns the same zeroed shape
     };
     const plan = computeTripPlan(items, perStorePrices);
     expectZeroedShape(plan, 1);
-    expect(plan.unassigned[0]).toEqual({
-      itemId: 'milk',
-      itemName: 'milk',
-      quantity: 3,
-      price: 0,
-      unit: 'ea',
-      lineTotal: 0,
-    });
+    expect(plan.unassigned[0]).toEqual({ ...unpriced('milk', 3, 'ea'), reasons: ['no_offer'] });
   });
 
   it('treats stores with empty price maps as irrelevant', () => {
@@ -119,7 +119,7 @@ describe('computeTripPlan — zero relevant stores returns the same zeroed shape
 });
 
 describe('computeTripPlan — unpriced items land in unassigned, not dropped', () => {
-  it('assigns priced items and keeps unpriced items with price: 0', () => {
+  it('assigns priced items and keeps unpriced items with price: null', () => {
     const items = [makeItem('milk', 1), makeItem('caviar', 2, 'jar')];
     const perStorePrices = {
       store_a: { milk: makePrice(4.99) },
@@ -128,9 +128,7 @@ describe('computeTripPlan — unpriced items land in unassigned, not dropped', (
 
     expect(plan.stops).toHaveLength(1);
     expect(plan.stops[0].items.map((it) => it.itemId)).toEqual(['milk']);
-    expect(plan.unassigned).toEqual([
-      { itemId: 'caviar', itemName: 'caviar', quantity: 2, price: 0, unit: 'jar', lineTotal: 0 },
-    ]);
+    expect(plan.unassigned).toEqual([{ ...unpriced('caviar', 2, 'jar'), reasons: ['no_offer'] }]);
     // Unpriced items contribute nothing to cost — but are not silently dropped.
     expect(plan.totalCost).toBeCloseTo(4.99);
   });
@@ -150,7 +148,8 @@ describe('computeTripPlan — unpriced items land in unassigned, not dropped', (
     const unassignedIds = plan.unassigned.map((it) => it.itemId).sort();
     expect(unassignedIds).toEqual(['dragon_eggs', 'unicorn_dust']);
     for (const it of plan.unassigned) {
-      expect(it.price).toBe(0);
+      expect(it.price).toBeNull();
+      expect(it.lineTotal).toBeNull();
     }
     // All 4 items accounted for: assigned + unassigned.
     const assignedCount = plan.stops.reduce((n, s) => n + s.items.length, 0);
@@ -297,10 +296,9 @@ describe('computeTripPlan — exact enumeration (≤7 stores) vs greedy (>7)', (
   });
 });
 
-describe('computeTripPlan — savings floors at 0', () => {
-  it('reports savings 0 (not negative) when all stores price identically', () => {
-    // worstSingleCost equals the optimized total → raw savings is 0;
-    // Math.max(0, …) keeps it there.
+describe('computeTripPlan — savings against the one-stop baseline', () => {
+  it('reports savings 0 only when the comparable totals really are equal', () => {
+    // Same lines, identical prices: the optimized total equals the baseline.
     const items = [makeItem('milk', 2)];
     const perStorePrices = {
       store_a: { milk: makePrice(4.0) },

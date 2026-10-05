@@ -6,7 +6,7 @@
  *  1. Checked items were still priced / planned
  *  2. A partial store (Fortinos 3/12 at $7.88) was labelled cheapest
  *  3. Expired flyer offers stayed eligible
- *  4. A price change returned a stale cached plan
+ *  4. A price change returned a stale plan
  *  5. Notes / variants (green grapes, lactose-free, sale only) ignored
  *  6. Measured quantities priced as N × package
  *  7. Waterdown 2- and 3-stop fixture
@@ -14,7 +14,7 @@
  * Run: npx jest __tests__/basket-correctness.test.ts
  */
 
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { jest, describe, it, expect } from '@jest/globals';
 import type { PriceResult, PriceSourceTier } from '../src/pricing/types';
 import {
   selectBasketItems,
@@ -26,12 +26,7 @@ import {
 } from '../src/pricing/basket';
 import { computeStopProposals } from '../src/pricing/stop-optimizer';
 import { computeTripPlan } from '../src/pricing/trip-plan';
-import {
-  buildCacheKey,
-  getCachedPlan,
-  setCachedPlan,
-  invalidateCache,
-} from '../src/pricing/trip-plan-cache';
+import { analyzeBasket } from '../src/pricing/basket';
 import type { FlippDealRow } from '../src/services/dealMatcher';
 
 // ─── Mocks (Flipp adapter dependencies) ─────────────────────────────────────
@@ -150,7 +145,7 @@ describe('2. coverage-first comparisons (Fortinos $7.88 for 3/12)', () => {
 
     const plan = computeTripPlan(basket, { a, b }, 2);
     expect(plan.savingsComparable).toBe(false);
-    expect(plan.savings).toBe(0);
+    expect(plan.savings).toBeNull(); // unavailable, not a false $0
   });
 
   it('a route lists the items it cannot supply', () => {
@@ -218,24 +213,21 @@ describe('3. expired, stale and demo prices are ineligible', () => {
   });
 });
 
-// ─── 4. Cache ───────────────────────────────────────────────────────────────
+// ─── 4. Plan fingerprint ────────────────────────────────────────────────────
 
-describe('4. a price change never returns a cached plan', () => {
-  beforeEach(() => invalidateCache());
-
-  it('changing a price changes the cache key', () => {
+describe('4. a price change never reuses a plan', () => {
+  it('changing a price changes the analysis fingerprint', () => {
     const items = [item('milk')];
-    const before = { s1: { milk: price(4) } };
-    const after = { s1: { milk: price(2) } };
-    setCachedPlan(buildCacheKey(3, items, before), computeTripPlan(items, before));
-    expect(getCachedPlan(buildCacheKey(3, items, after))).toBeNull();
-    expect(getCachedPlan(buildCacheKey(3, items, before))?.totalCost).toBeCloseTo(4);
+    const before = analyzeBasket(items, { s1: { milk: price(4) } }, { now: NOW });
+    const after = analyzeBasket(items, { s1: { milk: price(2) } }, { now: NOW });
+    expect(after.contextKey).not.toEqual(before.contextKey);
+    expect(analyzeBasket(items, { s1: { milk: price(4) } }, { now: NOW }).contextKey).toEqual(before.contextKey);
   });
 
-  it('changing a unit changes the cache key', () => {
+  it('changing a unit changes the analysis fingerprint', () => {
     const prices = { s1: { milk: price(4) } };
-    expect(buildCacheKey(3, [item('milk', { unit: 'L' })], prices))
-      .not.toEqual(buildCacheKey(3, [item('milk', { unit: '' })], prices));
+    expect(analyzeBasket([item('milk', { unit: 'L' })], prices, { now: NOW }).contextKey)
+      .not.toEqual(analyzeBasket([item('milk', { unit: '' })], prices, { now: NOW }).contextKey);
   });
 });
 
@@ -290,14 +282,14 @@ describe('5. notes and variants constrain matches', () => {
 describe('6. quantity math buys whole packages', () => {
   it('2 L of milk from a 4 L jug is one jug, not 2 × the price', () => {
     const jug = price(5.49, { unit: 'L', packageSize: 4 });
-    expect(lineCost({ quantity: 2, unit: 'L' }, jug)).toEqual({ cost: 5.49, quantityAssumed: false });
+    expect(lineCost({ quantity: 2, unit: 'L' }, jug).cost).toBeCloseTo(5.49);
     expect(lineCost({ quantity: 5, unit: 'L' }, jug).cost).toBeCloseTo(10.98);
   });
 
   it('converts between units of the same dimension', () => {
     const carton = price(3.0, { unit: 'L', packageSize: 1 });
     expect(lineCost({ quantity: 1000, unit: 'mL' }, carton).cost).toBeCloseTo(3.0);
-    const perKg = price(4.4, { unit: 'kg' });
+    const perKg = price(4.4, { unit: 'kg', pricingBasis: 'measure' });
     expect(lineCost({ quantity: 500, unit: 'g' }, perKg).cost).toBeCloseTo(2.2);
   });
 
@@ -305,8 +297,10 @@ describe('6. quantity math buys whole packages', () => {
     expect(lineCost({ quantity: 3, unit: '' }, price(2)).cost).toBeCloseTo(6);
   });
 
-  it('a mismatched unit assumes one package and says so', () => {
-    expect(lineCost({ quantity: 2, unit: 'kg' }, price(3.99))).toEqual({ cost: 3.99, quantityAssumed: true });
+  it('a mismatched unit is not costed (no guessed package)', () => {
+    expect(lineCost({ quantity: 2, unit: 'kg' }, price(3.99))).toEqual({
+      cost: null, purchase: null, reason: 'unit_incompatible',
+    });
   });
 
   it('the trip plan uses package math for its totals', () => {

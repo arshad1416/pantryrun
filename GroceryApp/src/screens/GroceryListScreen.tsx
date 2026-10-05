@@ -39,8 +39,10 @@ import StopOptimizer from '../components/StopOptimizer';
 import UndoToast from '../components/UndoToast';
 import { usePriceStore } from '../pricing/price-store';
 import { useThemeStore, useActiveTheme } from '../state/useThemeStore';
-import { computeStopProposals } from '../pricing/stop-optimizer';
-import { evaluateStores, filterEligiblePrices, selectBasketItems } from '../pricing/basket';
+import { proposalsFromAnalysis } from '../pricing/stop-optimizer';
+import { analyzeBasket, planForStores, selectBasketItems, type PlanContext } from '../pricing/basket';
+import { addLocalDays, deviceTimeZone, localDate } from '../pricing/eligibility';
+import type { PlanOptions } from '../components/StopOptimizer';
 import { flippDealsAdapter } from '../pricing/flipp-deals-adapter';
 import { crowdsourcedAdapter } from '../pricing/crowdsourced';
 import { getSettings, updateSettings } from '../config/settings';
@@ -194,62 +196,84 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     return map;
   }, [availableStores]);
 
-  // The basket: unchecked, undeleted items on this list. Prices are fetched
-  // and compared for these only — checked items are already in the cart.
+  // The basket: unchecked, undeleted items on this list with a quantity
+  // other than 0. Prices are fetched and compared for these only —
+  // checked items are already in the cart.
   const basketItems = useMemo(() => selectBasketItems(items, listId), [items, listId]);
 
-  // Only prices that may be used for their item: unexpired, fresh, not demo
-  // data (dev builds excepted), and matching variant / "sale only" notes.
-  const eligiblePrices = useMemo(
-    () => filterEligiblePrices(basketItems, perStorePrices, { includeDemo: __DEV__ }),
-    [basketItems, perStorePrices],
+  // The clock the plan is evaluated at. Ticks every minute (and on focus),
+  // so an offer that expires while the list is open stops counting even if
+  // nothing else changes.
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (isFocused) setClock(Date.now());
+  }, [isFocused]);
+
+  const [planOptions, setPlanOptions] = useState<PlanOptions>({
+    maxStops: 3,
+    shoppingDay: 'today',
+    memberships: [],
+    requireHeld: false,
+  });
+
+  const planCtx = useMemo<PlanContext>(() => {
+    const timeZone = deviceTimeZone();
+    const today = localDate(clock, timeZone);
+    const from = planOptions.shoppingDay === 'tomorrow' ? addLocalDays(today, 1) : today;
+    const through = planOptions.shoppingDay === 'week' ? addLocalDays(today, 6) : from;
+    return {
+      now: clock,
+      timeZone,
+      shoppingDate: from,
+      shoppingThrough: through,
+      includeDemo: __DEV__,
+      memberships: planOptions.memberships,
+      requireHeldItems: planOptions.requireHeld,
+    };
+  }, [clock, planOptions.shoppingDay, planOptions.memberships, planOptions.requireHeld]);
+
+  // One analysis of the whole basket: eligibility on the shopping date,
+  // variant / sale-only rules, and purchase math. Store cards, route cards,
+  // route sections, price badges and Plan My Trip all read from it.
+  const analysis = useMemo(
+    () => analyzeBasket(basketItems, perStorePrices, planCtx),
+    [basketItems, perStorePrices, planCtx],
   );
 
-  // Basket items matching the search, for the stop optimizer
-  const filteredUncheckedItems = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return q ? basketItems.filter((i) => i.name.toLowerCase().includes(q)) : basketItems;
-  }, [basketItems, searchQuery]);
-
   const stopProposals = useMemo(
-    () => computeStopProposals(filteredUncheckedItems, eligiblePrices, storeNameMap),
-    [filteredUncheckedItems, eligiblePrices, storeNameMap],
+    () => proposalsFromAnalysis(analysis, storeNameMap, planOptions.maxStops, planCtx),
+    [analysis, storeNameMap, planOptions.maxStops, planCtx],
   );
 
   // Where each basket item is cheapest across every store, and across the
   // selected route — the same assignment the totals were computed from.
-  const bestLines = useMemo(
-    () => evaluateStores(basketItems, Object.keys(eligiblePrices), eligiblePrices),
-    [basketItems, eligiblePrices],
-  );
+  const bestLines = useMemo(() => planForStores(analysis, analysis.storeIds), [analysis]);
   const selectedRoute = useMemo(() => {
     if (!selectedRouteNumStops) return null;
-    const proposal = stopProposals.find((p) => p.numStops === selectedRouteNumStops);
-    if (!proposal) return null;
-    const storeIds = proposal.stores.map((s) => s.storeId);
-    return { proposal, evaluation: evaluateStores(basketItems, storeIds, eligiblePrices) };
-  }, [selectedRouteNumStops, stopProposals, basketItems, eligiblePrices]);
+    return stopProposals.find((p) => p.numStops === selectedRouteNumStops) ?? null;
+  }, [selectedRouteNumStops, stopProposals]);
 
   const getItemPrice = useCallback(
     (itemId: string): PriceResult | null => {
-      if (selectedStoreId) return eligiblePrices[selectedStoreId]?.[itemId] ?? null;
-      if (selectedRoute) return selectedRoute.evaluation.assignments[itemId]?.price ?? null;
-      return bestLines.assignments[itemId]?.price ?? null;
+      const entry = analysis.items.find((a) => a.item.id === itemId);
+      if (selectedStoreId) return entry?.options.find((o) => o.storeId === selectedStoreId)?.offer ?? null;
+      const plan = selectedRoute?.plan ?? bestLines;
+      return plan.lines.find((l) => l.itemId === itemId)?.option?.offer ?? null;
     },
-    [selectedStoreId, selectedRoute, eligiblePrices, bestLines],
+    [analysis, selectedStoreId, selectedRoute, bestLines],
   );
 
-  const [, forceRender] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => {
       // Actually release claims past the 30-min expiry (syncs to the family
-      // via the normal Yjs path), then re-render so claim badges update.
+      // via the normal Yjs path), then advance the clock so claim badges and
+      // offer expiry update.
       try {
         yjsSweepExpiredClaims(listId);
       } catch {
         // Yjs doc not yet hydrated — nothing to sweep
       }
-      forceRender((n) => n + 1);
+      setClock(Date.now());
     }, 60_000);
     return () => clearInterval(timer);
   }, [listId]);
@@ -380,22 +404,22 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     return sections;
   }, [items, listId, searchQuery, gotItExpanded, activeCategory]);
 
-  // Store totals — each store's total covers only the items it carries, so
+  // Store totals — each store's total covers only the lines it can price, so
   // sort coverage-first: a cheap partial basket never outranks a full one.
   const storeTotals = useMemo(() => {
-    const totals: StoreTotal[] = Object.keys(eligiblePrices).map((storeId) => {
-      const evaluation = evaluateStores(basketItems, [storeId], eligiblePrices);
+    const totals: StoreTotal[] = analysis.storeIds.map((storeId) => {
+      const plan = planForStores(analysis, [storeId]);
       return {
         storeId,
         storeName: storeNameMap[storeId] ?? storeId,
-        total: evaluation.total,
-        coveredCount: basketItems.length - evaluation.missing.length,
-        totalCount: basketItems.length,
+        total: plan.totalCents / 100,
+        coveredCount: plan.costedCount,
+        totalCount: plan.totalCount,
       };
     });
-    totals.sort((a, b) => b.coveredCount - a.coveredCount || a.total - b.total);
+    totals.sort((a, b) => b.coveredCount - a.coveredCount || a.total - b.total || a.storeId.localeCompare(b.storeId));
     return totals;
-  }, [basketItems, eligiblePrices, storeNameMap]);
+  }, [analysis, storeNameMap]);
 
   // Store-plan sections
   const storePlanSections = useMemo(() => {
@@ -446,11 +470,12 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     return sections;
   }, [items, listId, searchQuery, gotItExpanded, selectedStoreId]);
 
-  // Route-plan sections — grouped by the same assignment the route card's
-  // total was computed from.
+  // Route-plan sections — grouped by the same plan the route card's total
+  // was computed from.
   const routePlanSections = useMemo(() => {
     if (!selectedRoute) return null;
-    const { proposal, evaluation } = selectedRoute;
+    const { plan, stores } = selectedRoute;
+    const lineById = new Map(plan.lines.map((l) => [l.itemId, l]));
 
     const allItems = Object.values(items).filter(
       (item) => !item.isDeleted && item.listId === listId,
@@ -467,21 +492,26 @@ export default function GroceryListScreen({ route, navigation }: Props) {
 
     const storeGroups: Record<string, GroceryItem[]> = {};
     const storeSubtotals: Record<string, number> = {};
+    const heldGroup: GroceryItem[] = [];
     const fallbackGroup: GroceryItem[] = [];
 
     for (const item of unchecked) {
-      const line = evaluation.assignments[item.id];
-      if (line) {
-        (storeGroups[line.storeId] ??= []).push(item);
-        storeSubtotals[line.storeId] = (storeSubtotals[line.storeId] ?? 0) + line.cost;
-      } else {
+      const line = lineById.get(item.id);
+      if (line?.option) {
+        const sid = line.option.storeId;
+        (storeGroups[sid] ??= []).push(item);
+        storeSubtotals[sid] = (storeSubtotals[sid] ?? 0) + line.option.purchase.costCents / 100;
+      } else if (line?.status === 'held') {
+        heldGroup.push(item);
+      } else if (line) {
         fallbackGroup.push(item);
       }
+      // No line: quantity 0 — not part of the basket.
     }
 
     const sections: ListSection[] = [];
 
-    proposal.stores.forEach((store, idx) => {
+    stores.forEach((store, idx) => {
       const data = storeGroups[store.storeId];
       if (data && data.length > 0) {
         sections.push({
@@ -492,9 +522,16 @@ export default function GroceryListScreen({ route, navigation }: Props) {
       }
     });
 
+    if (heldGroup.length > 0) {
+      sections.push({
+        title: 'Held — sale only, no qualifying sale',
+        data: heldGroup,
+      });
+    }
+
     if (fallbackGroup.length > 0) {
       sections.push({
-        title: 'Not on this route (no eligible price)',
+        title: 'Not on this route (no usable price)',
         data: fallbackGroup,
       });
     }
@@ -1044,20 +1081,18 @@ export default function GroceryListScreen({ route, navigation }: Props) {
               paid), computed solely by src/config/entitlements.ts. */}
           {TRIP_OPTIMIZER_ENABLED && isPlus && (
             <StopOptimizer
-              items={filteredUncheckedItems}
-              perStorePrices={eligiblePrices}
+              items={basketItems}
+              analysis={analysis}
+              proposals={stopProposals}
               storeNameMap={storeNameMap}
+              options={planOptions}
+              onChangeOptions={setPlanOptions}
+              now={clock}
               selectedRouteNumStops={selectedRouteNumStops}
               onSelectRouteNumStops={(numStops) => {
                 setSelectedRouteNumStops(numStops);
                 setSelectedStoreId(null);
               }}
-              fullItems={filteredUncheckedItems.map((item) => ({
-                id: item.id,
-                name: item.name,
-                quantity: item.quantity,
-                unit: item.unit,
-              }))}
             />
           )}
 
@@ -1092,7 +1127,9 @@ export default function GroceryListScreen({ route, navigation }: Props) {
           {priceSummaryItem && (() => {
             const priceEntries = availableStores
               .map((store) => {
-                const pr = eligiblePrices[store.storeId]?.[priceSummaryItem.id];
+                const pr = analysis.items
+                  .find((a) => a.item.id === priceSummaryItem.id)
+                  ?.options.find((o) => o.storeId === store.storeId)?.offer;
                 return pr ? `${store.storeName} $${pr.price.toFixed(2)}` : null;
               })
               .filter(Boolean);
