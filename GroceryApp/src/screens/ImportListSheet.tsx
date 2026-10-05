@@ -3,8 +3,10 @@
  *
  * Keep has no consumer API, so the flow is: in Keep, ⋮ → Send → Copy to
  * clipboard; paste here. The preview shows what will be added, which store
- * heading each item was under, and what was skipped (ticked in Keep,
- * duplicates, already on this list) before anything is written.
+ * heading each item was under, which items are a different variant of
+ * another line or of something already on the list, and what was skipped
+ * (ticked in Keep — named, so they can be added as checked — duplicates,
+ * already on this list) before anything is written.
  */
 
 import React, { useMemo, useState, useCallback } from 'react';
@@ -59,20 +61,29 @@ export default function ImportListSheet({ visible, listId, onClose, onImported }
   const [includeChecked, setIncludeChecked] = useState(false);
   const [importing, setImporting] = useState(false);
 
-  const existingNames = useMemo(
-    () => selectBasketItems(items, listId).map((i) => i.name),
+  const existingItems = useMemo(
+    () => selectBasketItems(items, listId).map((i) => ({ name: i.name, notes: i.notes })),
     [items, listId],
   );
   const result = useMemo(
-    () => parseKeepList(text, { includeChecked, existingNames }),
-    [text, includeChecked, existingNames],
+    () => parseKeepList(text, { includeChecked, existingItems }),
+    [text, includeChecked, existingItems],
   );
 
+  // Ticked lines are named (not just counted) so the person can see what
+  // the switch below would add as already-checked items.
+  const tickedLines = useMemo(
+    () => result.skipped.filter((s) => s.reason === 'ticked').map((s) => s.text),
+    [result.skipped],
+  );
   const skippedSummary = useMemo(() => {
     const counts = new Map<SkipReason, number>();
-    for (const s of result.skipped) counts.set(s.reason, (counts.get(s.reason) ?? 0) + 1);
+    for (const s of result.skipped) {
+      if (s.reason !== 'ticked') counts.set(s.reason, (counts.get(s.reason) ?? 0) + 1);
+    }
     return Array.from(counts, ([reason, n]) => `${n} ${SKIP_LABELS[reason]}`).join(' · ');
   }, [result.skipped]);
+  const conflictCount = result.items.filter((i) => i.variantConflicts?.length).length;
 
   const handleClose = useCallback(() => {
     setText('');
@@ -164,6 +175,12 @@ export default function ImportListSheet({ visible, listId, onClose, onImported }
                 {count === 0 ? 'Nothing to add' : `${count} item${count === 1 ? '' : 's'} to add`}
                 {result.title ? ` from "${result.title}"` : ''}
               </Text>
+              {conflictCount > 0 && (
+                <Text style={[styles.warning, { color: theme.unassignedText }]}>
+                  ⚠ {conflictCount} item{conflictCount === 1 ? ' is a different variant' : 's are different variants'} of
+                  another line or of something on your list. They'll be added separately — check they're what you meant.
+                </Text>
+              )}
               {result.items.map((item, idx) => (
                 <View key={`${item.name}-${idx}`} style={[styles.previewRow, { borderTopColor: theme.divider }]}>
                   <Text style={[styles.previewName, { color: theme.text }]} numberOfLines={1}>
@@ -176,8 +193,24 @@ export default function ImportListSheet({ visible, listId, onClose, onImported }
                       {item.notes}
                     </Text>
                   ) : null}
+                  {item.checked ? (
+                    <Text style={[styles.previewNote, { color: theme.secondaryText }]}>
+                      Ticked in Keep — added as already checked
+                    </Text>
+                  ) : null}
+                  {item.variantConflicts?.length ? (
+                    <Text style={[styles.previewNote, { color: theme.unassignedText }]} numberOfLines={2}>
+                      ⚠ Different variant of: {item.variantConflicts.join(', ')}
+                    </Text>
+                  ) : null}
                 </View>
               ))}
+              {tickedLines.length > 0 ? (
+                <Text style={[styles.skipped, { color: theme.secondaryText }]}>
+                  Ticked in Keep, not added: {tickedLines.join(', ')}. Turn on "Include items ticked in Keep" to add
+                  {tickedLines.length === 1 ? ' it' : ' them'} as already checked.
+                </Text>
+              ) : null}
               {skippedSummary ? (
                 <Text style={[styles.skipped, { color: theme.secondaryText }]}>Skipped: {skippedSummary}</Text>
               ) : null}
@@ -241,6 +274,7 @@ const styles = StyleSheet.create({
   previewName: { fontSize: 14 },
   previewNote: { fontSize: 12, marginTop: 1 },
   skipped: { fontSize: 12, marginTop: 8 },
+  warning: { fontSize: 12, lineHeight: 16, marginBottom: 6 },
   importBtn: {
     margin: 12,
     borderRadius: 10,

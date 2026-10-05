@@ -12,7 +12,10 @@ _Checked 4 Oct 2026 against Google's official developer documentation._
 
 What the parser (`src/import/keep.ts`) does with what you paste:
 - **Store headings** (`Costco:`, `— No Frills —`, a bare known store such as `A1 Cash & Carry`) are never imported as items. Items listed under one get the note `From: <Store> list`.
-- **Ticked items, repeats and items already on the list** are skipped and listed in the preview.
+- **Ticked items** are skipped by default and named in the preview. The "Include items ticked in Keep" switch adds them as already-checked items.
+- **Repeats and items already on the list** are skipped. "Same item" is judged on the product and its rules, not the spelling: "Bananas" and "banana" are one item, but "milk" and "milk (lactose free)" are two.
+- **Variant conflicts** are flagged. These are lines that are the same product with different hard attributes ("red grapes" vs "green grapes", "LF milk" vs a "Milk" already on the list). Both are kept and never merged, and the preview warns on each one.
+- **Hard attributes written in a note** become requirements for the planner: "milk (lactose free)" needs lactose-free. Negated ones don't count: "no garlic" adds nothing.
 - **Notes** written in parentheses or after a dash (`ketchup - sale only`) become the item's notes. That keeps the planner's sale-only and variant rules working.
 - **Quantities and units** that are written are read. A line with no quantity becomes 1 package of whatever the store sells. That matches the app's convention for an item with no unit.
 

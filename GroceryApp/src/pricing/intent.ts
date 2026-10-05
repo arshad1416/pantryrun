@@ -11,7 +11,9 @@
  *    is "mayo". Product names go through the same canonicalization, so
  *    both sides compare like with like.
  *  - Hard attributes (lactose-free, whole, green, Jamaican, garlic, …)
- *    are always retained, even when substitutes are allowed.
+ *    are always retained, even when substitutes are allowed. One written
+ *    anywhere in a note ("milk (lactose free)") is a requirement unless
+ *    negated ("no garlic").
  *  - "sale only" notes make the item a hold until a qualifying sale exists.
  *  - "any brand" / "subs ok" notes allow substitutes: only the head noun
  *    and hard attributes must then match. "no subs" (the default) keeps
@@ -151,6 +153,12 @@ export function parseItemIntent(item: { name: string; notes?: string }): ItemInt
         }
       }
     }
+  }
+  // A hard attribute written anywhere in a note ("(lactose free)", "green
+  // ones") is a requirement too — unless negated ("no garlic", "not spicy").
+  const unnegated = withoutPolicy.replace(/\b(?:no|not|non|without)[\s-]+[a-z0-9.%-]+(?:[\s-]+free)?/gi, ' ');
+  for (const t of extractKeywords(unnegated)) {
+    if (HARD_ATTRIBUTES.has(t) && !nameTokens.includes(t) && !noteTokens.includes(t)) noteTokens.push(t);
   }
 
   const all = [...nameTokens, ...noteTokens];

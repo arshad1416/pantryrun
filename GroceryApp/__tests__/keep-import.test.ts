@@ -270,3 +270,63 @@ describe('useGroceryStore.addItem — silent option', () => {
     expect(useGroceryStore.getState().items[item.id]?.name).toBe('Eggs');
   });
 });
+
+describe('parseKeepList — variants and ticked items', () => {
+  it('a different variant is not a duplicate: "milk" and "milk (lactose free)" are both kept', () => {
+    const r = parseKeepList('☐ milk\n☐ milk (lactose free)');
+    expect(r.items.map((i) => [i.name, i.notes])).toEqual([['Milk', undefined], ['Milk', 'lactose free']]);
+    expect(r.skipped).toEqual([]);
+  });
+
+  it('flags lines that are the same product with different hard attributes, on both sides', () => {
+    const r = parseKeepList('☐ red grapes\n☐ green grapes\n☐ bread');
+    const byName = Object.fromEntries(r.items.map((i) => [i.name, i]));
+    expect(byName['Red grapes'].variantConflicts).toEqual(['Green grapes']);
+    expect(byName['Green grapes'].variantConflicts).toEqual(['Red grapes']);
+    expect(byName['Bread'].variantConflicts).toBeUndefined();
+  });
+
+  it('flags a variant of something already on the list, and still adds it separately', () => {
+    const r = parseKeepList('☐ LF milk', { existingItems: [{ name: 'Milk' }] });
+    expect(r.items).toHaveLength(1);
+    expect(r.items[0].variantConflicts).toEqual(['Milk (on your list)']);
+  });
+
+  it('names the other line\'s own note, not its heading note', () => {
+    const r = parseKeepList('Costco:\n☐ milk (lactose free)\n☐ milk');
+    expect(r.items[1].variantConflicts).toEqual(['Milk (lactose free)']);
+  });
+
+  it('spelling variants of the same item are still duplicates', () => {
+    const r = parseKeepList('☐ Bananas\n☐ banana');
+    expect(r.items).toHaveLength(1);
+    expect(r.skipped).toEqual([{ text: 'banana', reason: 'duplicate' }]);
+  });
+
+  it('an existing item with the same notes is already on the list; without them it is a variant', () => {
+    const pasted = '☐ milk (lactose free)';
+    expect(parseKeepList(pasted, { existingItems: [{ name: 'Milk', notes: 'lactose free' }] }).skipped)
+      .toEqual([{ text: 'milk (lactose free)', reason: 'already_on_list' }]);
+    expect(parseKeepList(pasted, { existingItems: [{ name: 'Milk' }] }).items[0].variantConflicts)
+      .toEqual(['Milk (on your list)']);
+  });
+
+  it('ticked lines are reported by text so the preview can name them; included, they stay checked', () => {
+    const pasted = '☐ milk\n☑ bread\n☑ eggs';
+    expect(parseKeepList(pasted).skipped).toEqual([
+      { text: 'bread', reason: 'ticked' },
+      { text: 'eggs', reason: 'ticked' },
+    ]);
+    expect(parseKeepList(pasted, { includeChecked: true }).items.map((i) => [i.name, i.checked]))
+      .toEqual([['Milk', false], ['Bread', true], ['Eggs', true]]);
+  });
+});
+
+describe('planner reads hard attributes written in notes', () => {
+  it('"milk (lactose free)" requires lactose-free; "no garlic" adds no requirement', () => {
+    const lf = parseItemConstraints({ name: 'Milk', notes: 'lactose free' });
+    expect(lf.requiredTokens).toEqual(expect.arrayContaining(['milk', 'lactosefree']));
+    expect(parseItemConstraints({ name: 'Mayo', notes: 'no garlic' }).requiredTokens).toEqual(['mayo']);
+    expect(parseItemConstraints({ name: 'Grapes', notes: 'From: Costco list · green ones' }).hardAttributes).toEqual(['green']);
+  });
+});

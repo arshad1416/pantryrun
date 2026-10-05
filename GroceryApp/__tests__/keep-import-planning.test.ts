@@ -56,7 +56,9 @@ describe('G. Keep import keeps what the planner needs', () => {
   });
 
   it('a repeated paste adds nothing', () => {
-    const again = parseKeepList(KEEP_CHECKLIST, { existingNames: result.items.map((i) => i.name) });
+    const again = parseKeepList(KEEP_CHECKLIST, {
+      existingItems: result.items.map((i) => ({ name: i.name, notes: i.notes })),
+    });
     expect(again.items).toEqual([]);
   });
 });
