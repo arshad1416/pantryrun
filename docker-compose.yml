@@ -49,6 +49,14 @@ services:
       # Managed (paid): set QWEN_API_KEY for DashScope qwen-vl-max instead.
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434/api/generate}
       - QWEN_API_KEY=${QWEN_API_KEY:-}
+      # Live prices (GET /api/prices/{deals,shelf}): the relay reads the
+      # operator's scraper database (flipp_deals, store_prices) server-side.
+      # Use a READ-ONLY token: `turso db tokens create <db> --read-only`.
+      # Set both in a gitignored .env next to this file; unset = the price
+      # endpoints return 503 and the app shows "Live prices unavailable".
+      # The app never receives either value.
+      - TURSO_URL=${TURSO_URL:-}
+      - TURSO_READ_TOKEN=${TURSO_READ_TOKEN:-}
       # All relay state (relay-state.json, used-tokens.json, data/) is written
       # under RELAY_DATA_DIR — a dedicated path OUTSIDE /app — so the volume
       # mount does NOT shadow the application code.

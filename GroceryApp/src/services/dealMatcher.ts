@@ -2,27 +2,20 @@
  * DealMatcher — matches grocery list items against Flipp flyer deals
  * using in-memory caching and keyword-based token intersection.
  *
- * Architecture per Qwen audit recommendation:
- *   - Fetch all deals for user's FSA once (avoids slow LIKE '%term%' Turso queries)
- *   - Cache in-memory for the session
+ * Deals come from the relay (GET /api/prices/deals, see
+ * pricing/live-prices.ts), which reads the operator's flyer scraper:
+ *   - Fetch all deals for the user's FSA (no item names leave the device)
+ *   - Reuse the region's snapshot between refreshes
  *   - Search locally with token intersection matching
  *   - Greedy set-cover algorithm for store optimization
  */
 
-import { getTurso, isTursoReady } from './tursoClient';
-import { getCachedDeals, setCachedDeals } from './dealCache';
 import { extractKeywords, matchScore } from '../pricing/basket';
+import { loadFlyerDeals, type FlyerDealRow } from '../pricing/live-prices';
 import type { GroceryItem } from '../types';
 
-/** A deal row from the flipp_deals Turso table (internal type, also used by dealCache) */
-export interface FlippDealRow {
-  merchant: string;
-  name: string;
-  price: string;
-  price_real: number | null;
-  image_url: string | null;
-  valid_to: string;
-}
+/** A flyer deal row as served by the relay. */
+export type FlippDealRow = FlyerDealRow;
 
 export interface DealMatch {
   merchant: string;
@@ -46,51 +39,18 @@ export interface OptimizedStoreRun {
   totalStops: number;
 }
 
-// ─── Deal fetching (cached) ──────────────────────────────────────────────────
-
+// ─── Deal fetching ───────────────────────────────────────────────────────────
 
 /**
- * Fetch all currently-valid deals for a given FSA.
- * Results are cached in-memory for the session.
+ * All current deals for an FSA, from the relay. Empty when the relay isn't
+ * configured or has no prices; last-known deals when a refresh fails.
  */
 export async function fetchDealsForFSA(
   fsa: string,
   forceRefresh = false,
 ): Promise<FlippDealRow[]> {
-  if (!forceRefresh) {
-    const cached = getCachedDeals(fsa);
-    if (cached) return cached;
-  }
-
-  if (!isTursoReady()) return [];
-
-  try {
-    const db = getTurso();
-    // Use FSA prefix match (first 3 chars of postal code)
-    const prefix = fsa.slice(0, 3).toUpperCase();
-    const result = await db.execute(
-      `SELECT merchant, name, price, price_real, image_url, valid_to
-       FROM flipp_deals
-       WHERE postal_code LIKE ?
-         AND valid_to >= datetime('now')
-       ORDER BY merchant, price_real ASC`,
-      [prefix + '%'],
-    );
-
-    const deals: FlippDealRow[] = result.rows.map((row) => ({
-      merchant: String(row[0] ?? ''),
-      name: String(row[1] ?? ''),
-      price: String(row[2] ?? ''),
-      price_real: row[3] != null ? Number(row[3]) : null,
-      image_url: row[4] != null ? String(row[4]) : null,
-      valid_to: String(row[5] ?? ''),
-    }));
-
-    setCachedDeals(fsa, deals);
-    return deals;
-  } catch {
-    return [];
-  }
+  const snap = await loadFlyerDeals(fsa, forceRefresh);
+  return snap?.rows ?? [];
 }
 
 // ─── Deal matching ───────────────────────────────────────────────────────────

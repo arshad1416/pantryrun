@@ -25,8 +25,8 @@
 
 import type { ScannedFlyerPrice, FlyerExtractor } from './flyer-types';
 import type { SaleInfo } from './types';
-import { getSettings } from '../config/settings';
 import { getRelayToken } from '../identity/enroll';
+import { getRelayHttpBaseUrl } from './relay-client';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -106,21 +106,6 @@ async function fileUriToBase64(uri: string): Promise<string> {
   return `data:${mimeType};base64,${base64}`;
 }
 
-/**
- * Build the relay server HTTP URL from settings.
- */
-function getHttpBaseUrl(): string | null {
-  const settings = getSettings();
-  if (!settings.relayUrl) return null;
-
-  const httpUrl = settings.relayUrl
-    .replace(/^ws:/, 'http:')
-    .replace(/^wss:/, 'https:');
-
-  const hasPort = /:\d+/.test(httpUrl.replace(/^https?:\/\//, ''));
-  if (hasPort) return httpUrl;
-  return `${httpUrl}:${settings.relayPort || 8080}`;
-}
 
 // ─── RelayExtractor ─────────────────────────────────────────────────────────
 
@@ -133,8 +118,7 @@ export class RelayExtractor implements FlyerExtractor {
    */
   async extract(image: string): Promise<ScannedFlyerPrice[]> {
     try {
-      const settings = getSettings();
-      const baseUrl = getHttpBaseUrl();
+      const baseUrl = getRelayHttpBaseUrl();
       const relayToken = await getRelayToken();
 
       if (!baseUrl || !relayToken) {

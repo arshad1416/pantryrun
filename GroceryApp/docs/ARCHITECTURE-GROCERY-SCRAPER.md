@@ -5,10 +5,18 @@
 **Depends On:** `ARCHITECTURE-PRICE-LOOKUP.md`, `flippscrape.py`, the operator's Turso DB
 (hostname supplied via `PANTRYRUN_TURSO_URL`, never committed)
 
-> **v1 status:** this is a design document for a post-v1 feature. Nothing here
-> ships in v1 — `src/services/tursoClient.ts` has no credential source and
-> `isTursoReady()` is always false (`tursoClient.ts:1-14,197`), so
-> `store-prices-adapter.ts` returns no results.
+> **Status (Oct 2026): served through the relay.** The scraper still writes
+> `flipp_deals` and `store_prices` to Turso from the operator's machine. The
+> app never reads Turso: the relay reads it server-side with a **read-only**
+> token (`TURSO_URL`, `TURSO_READ_TOKEN` in the relay's `.env`) and serves
+> `GET /api/prices/deals?fsa=` and `GET /api/prices/shelf?fsa=` to enrolled
+> devices (`relay-server/prices/`). The app downloads its region and matches
+> on the device (`src/pricing/live-prices.ts`). Without the env vars the
+> endpoints return 503 and the app shows no live prices.
+>
+> Setup: `turso db tokens create <db> --read-only`, put both values in the
+> relay's `.env`, `docker compose up -d`, then set the relay URL and FSA in
+> the app. Columns the app may see are allowlisted in `prices-server.js`.
 
 ---
 

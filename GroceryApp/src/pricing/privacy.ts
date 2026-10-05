@@ -40,10 +40,12 @@ export function normalizeForLookup(name: string): string {
 
 /**
  * Check if an adapter requires hashed item names.
- * Local adapters can use plaintext; remote adapters should use hashes.
+ * Adapters that match on the device can use plaintext; remote adapters
+ * should use hashes. flipp-deals and store-prices download a whole region
+ * from the relay and match locally — no item name leaves the device.
  */
 export function adapterRequiresHash(adapterId: string): boolean {
-  const localAdapters = new Set(['crowdsourced', 'flyer-scan', 'flipp-deals']);
+  const localAdapters = new Set(['crowdsourced', 'flyer-scan', 'flipp-deals', 'store-prices']);
   return !localAdapters.has(adapterId);
 }
 

@@ -16,6 +16,7 @@ relay-docs.json
 tokens/__tests__/
 extract/*.bak*
 *.test.js
+*/*.test.js
 jest.config.js
 jest.global-setup.js
 test-assistant.js

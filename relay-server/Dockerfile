@@ -27,6 +27,7 @@ COPY lib/ ./lib/
 COPY tokens/ ./tokens/
 COPY pool/ ./pool/
 COPY extract/ ./extract/
+COPY prices/ ./prices/
 
 # Dedicated state directory — docker-compose mounts the relay-data volume here
 # (RELAY_DATA_DIR=/data). Created and chowned in the image so a named volume

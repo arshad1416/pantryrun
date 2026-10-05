@@ -19,6 +19,7 @@
 import type { PriceAdapter } from './adapter';
 import type { PriceResult, PriceSourceTier, ConfidenceLevel } from './types';
 import { getSettings } from '../config/settings';
+import { getRelayHttpBaseUrl } from './relay-client';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -73,28 +74,12 @@ export class CloudFlyerAdapter implements PriceAdapter {
   }
 
   /**
-   * Convert a WebSocket URL to an HTTP URL for API calls.
-   * Same pattern as testRelayConnection in settings.ts.
-   */
-  private getHttpBaseUrl(): string | null {
-    const settings = getSettings();
-    if (!settings.relayUrl) return null;
-    const httpUrl = settings.relayUrl
-      .replace(/^ws:/, 'http:')
-      .replace(/^wss:/, 'https:');
-    // Only append port if URL doesn't already have one (e.g. ws://host:8080 → already has port)
-    const hasPort = /:\d+/.test(httpUrl.replace(/^https?:\/\//, ''));
-    if (hasPort) return httpUrl;
-    return `${httpUrl}:${settings.relayPort}`;
-  }
-
-  /**
    * Fetch pooled prices for a store from the relay server.
    */
   private async fetchPoolPrices(
     storeId: string,
   ): Promise<PoolPriceEntry[]> {
-    const baseUrl = this.getHttpBaseUrl();
+    const baseUrl = getRelayHttpBaseUrl();
     if (!baseUrl) return [];
 
     try {
