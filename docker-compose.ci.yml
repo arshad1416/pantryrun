@@ -1,0 +1,16 @@
+# CI-only override: build the compose stack for amd64 only.
+#
+# docker-compose.yml builds the relay for linux/amd64 AND linux/arm64 so a
+# self-hosted deploy works on either architecture. On GitHub's amd64 runners
+# the arm64 half runs under QEMU emulation, which intermittently crashes in
+# `npm install` (qemu: uncaught target signal 4 — Illegal instruction) and
+# failed unrelated PRs and main. Per-PR CI therefore builds amd64 only; arm64
+# is built by .github/workflows/arm64-build.yml (main pushes, nightly, manual).
+#
+# `!override` replaces the list instead of appending to it (Compose ≥ 2.24).
+# Never used for deploys: `docker compose up` reads docker-compose.yml alone.
+services:
+  relay:
+    build:
+      platforms: !override
+        - linux/amd64

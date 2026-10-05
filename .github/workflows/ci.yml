@@ -138,16 +138,18 @@ jobs:
       - name: Run unit tests
         run: npm test
 
-  # ─── Docker Build (multi-arch) ────────────────────────────────────────────
+  # ─── Docker Build (amd64) ─────────────────────────────────────────────────
+  # Every push and PR builds and boot-tests the relay for amd64 only. The
+  # arm64 build ran here under QEMU emulation and intermittently crashed in
+  # `npm install` (qemu: uncaught target signal 4 — Illegal instruction),
+  # failing unrelated PRs and main; it now lives in arm64-build.yml (main
+  # pushes, nightly, manual), so arm64 is still built, just not per-PR.
   docker:
     name: Docker Build
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up QEMU (for ARM64 builds)
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -191,5 +193,6 @@ jobs:
           docker rm -f relay-smoke
           exit 1
 
-      - name: Build full compose stack
-        run: docker compose build
+      # docker-compose.ci.yml pins the build to amd64 (see its header).
+      - name: Build full compose stack (amd64)
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml build
