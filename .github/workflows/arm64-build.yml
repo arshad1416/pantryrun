@@ -1,0 +1,64 @@
+# Nightly arm64 relay build — on a native arm64 runner, no emulation.
+#
+# Per-push/PR coverage lives in ci.yml's Docker Build matrix (amd64 and arm64,
+# each on its own native runner). This workflow adds a nightly arm64 build with
+# no cache, so drift in the base image or npm registry shows up even on days
+# nothing is pushed. QEMU is deliberately not used: emulated arm64 `npm
+# install` crashed (SIGILL, exit 132) on every Intel runner host measured.
+name: arm64 Nightly
+
+on:
+  schedule:
+    - cron: '17 7 * * *' # daily, 03:17 Toronto (EDT)
+  workflow_dispatch:
+
+concurrency:
+  group: arm64-nightly
+  cancel-in-progress: true
+
+jobs:
+  relay-arm64:
+    name: Relay image (linux/arm64, native, uncached)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build relay image (arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: relay-server
+          file: relay-server/Dockerfile
+          platforms: linux/arm64
+          push: false
+          no-cache: true
+          pull: true
+          load: true
+          tags: groceryapp-relay:arm64
+
+      - name: Smoke test — the arm64 image boots and serves /health
+        run: |
+          set -euo pipefail
+          docker run -d --name relay-smoke -p 8080:8080 \
+            -e RELAY_TOKEN=ci-smoke-token \
+            groceryapp-relay:arm64
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/health >/dev/null 2>&1; then
+              echo "relay answered /health after ${i}s"
+              docker rm -f relay-smoke
+              exit 0
+            fi
+            if [ -z "$(docker ps -q -f name=relay-smoke)" ]; then
+              echo "::error::relay container exited before serving /health"
+              docker logs relay-smoke || true
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "::error::relay never served /health within 30s"
+          docker logs relay-smoke || true
+          docker rm -f relay-smoke
+          exit 1
