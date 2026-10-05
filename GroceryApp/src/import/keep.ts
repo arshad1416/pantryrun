@@ -14,8 +14,16 @@
  * heading carry the note "From: <Store> list" (other headings: "Section:
  * <X>"); the planner still picks stores by price.
  *
+ * Duplicates are judged by product requirements, not spelling: "milk" and
+ * "milk (lactose free)" are two items, and lines that are the same product
+ * with different hard attributes are flagged (variantConflicts), never
+ * merged. Ticked lines are skipped unless includeChecked is set, and are
+ * listed in `skipped` so the preview can name them.
+ *
  * Pure: no React Native imports, so it can be unit-tested directly.
  */
+
+import { HARD_ATTRIBUTES, parseItemIntent } from '../pricing/intent';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -28,6 +36,13 @@ export interface ImportedItem {
   heading?: string;
   /** Ticked in Keep — already bought */
   checked: boolean;
+  /**
+   * Other pasted items, or items already on the list, that are the same
+   * product with different hard attributes ("Milk" vs "LF milk", "Red
+   * grapes" vs "Green grapes"). They are kept as separate items, never
+   * merged; this is shown in the preview so the person can check.
+   */
+  variantConflicts?: string[];
 }
 
 export type SkipReason = 'ticked' | 'duplicate' | 'already_on_list' | 'not_an_item';
@@ -51,6 +66,8 @@ export interface KeepImportOptions {
   includeChecked?: boolean;
   /** Names of items already unchecked on the target list — not imported twice */
   existingNames?: string[];
+  /** Same as existingNames, with notes, so "milk (lactose free)" is told apart from "milk" */
+  existingItems?: { name: string; notes?: string }[];
 }
 
 /** Upper bound so a pasted novel can't flood the list. */
@@ -271,6 +288,21 @@ function isNoise(text: string): boolean {
   return /^https?:\/\//i.test(text) || !/[\p{L}\p{N}]/u.test(text);
 }
 
+// ─── Identity ───────────────────────────────────────────────────────────────
+
+/**
+ * What makes two lines the same item: the planner's product requirements
+ * (name words plus note rules like "lactose free only"), so "milk" and
+ * "milk (lactose free)" are different items, while "Bananas" and "banana"
+ * are the same. Heading notes ("From: Costco list") add no requirement.
+ */
+function identityOf(name: string, notes?: string): { key: string; base: string } {
+  const tokens = parseItemIntent({ name, notes }).requiredTokens;
+  const key = [...new Set(tokens)].sort().join(' ') || normalizeName(name);
+  const base = [...new Set(tokens.filter((t) => !HARD_ATTRIBUTES.has(t)))].sort().join(' ');
+  return { key, base };
+}
+
 // ─── Parser ─────────────────────────────────────────────────────────────────
 
 /** Parse a pasted Keep list (copied text or Takeout JSON). */
@@ -290,8 +322,14 @@ export function parseKeepList(input: string, opts: KeepImportOptions = {}): Keep
     }
   }
 
-  const existing = new Set((opts.existingNames ?? []).map(normalizeName));
+  const existingList = [
+    ...(opts.existingNames ?? []).map((name) => ({ name, notes: undefined as string | undefined })),
+    ...(opts.existingItems ?? []),
+  ].map((e) => ({ name: e.name, ...identityOf(e.name, e.notes) }));
+  const existing = new Set(existingList.map((e) => e.key));
   const seen = new Set<string>();
+  /** Per imported item: identity and the note written on the line itself */
+  const identities: { key: string; base: string; note?: string }[] = [];
   const items: ImportedItem[] = [];
   const headings: string[] = [];
   const skipped: SkippedLine[] = [];
@@ -323,7 +361,8 @@ export function parseKeepList(input: string, opts: KeepImportOptions = {}): Keep
       continue;
     }
 
-    const key = normalizeName(parsed.name);
+    const identity = identityOf(parsed.name, note);
+    const key = identity.key;
     if (existing.has(key)) {
       skipped.push({ text: line.text, reason: 'already_on_list' });
       continue;
@@ -352,7 +391,25 @@ export function parseKeepList(input: string, opts: KeepImportOptions = {}): Keep
       ...(notes ? { notes } : {}),
       ...(currentHeading ? { heading: currentHeading.text } : {}),
     });
+    identities.push({ ...identity, note });
   }
+
+  // Same product, different hard attributes: flag both sides, keep both.
+  const label = (name: string, note?: string) => (note ? `${name} (${note})` : name);
+  items.forEach((item, i) => {
+    const { key, base } = identities[i];
+    if (!base) return;
+    const conflicts = [
+      ...items
+        .map((other, j) => ({ other, j }))
+        .filter(({ j }) => j !== i && identities[j].base === base && identities[j].key !== key)
+        .map(({ other, j }) => label(other.name, identities[j].note)),
+      ...existingList
+        .filter((e) => e.base === base && e.key !== key)
+        .map((e) => `${e.name} (on your list)`),
+    ];
+    if (conflicts.length > 0) item.variantConflicts = [...new Set(conflicts)];
+  });
 
   return { ...(title ? { title } : {}), items, headings, skipped };
 }
