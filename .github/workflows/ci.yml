@@ -138,16 +138,24 @@ jobs:
       - name: Run unit tests
         run: npm test
 
-  # ─── Docker Build (amd64) ─────────────────────────────────────────────────
-  # Every push and PR builds and boot-tests the relay for amd64 only. The
-  # arm64 build used to run here under QEMU, which crashes `npm install`
-  # (Illegal instruction) on Intel runner hosts — measured 20/20 — and passes
-  # on AMD ones, so it failed PRs at random. (#13 pinned binfmt qemu-v7.0.0
-  # here as a stopgap; superseded.) arm64 now builds natively in
-  # arm64-build.yml (main, nightly, manual, and PRs touching the relay).
+  # ─── Docker Build (multi-arch) ────────────────────────────────────────────
+  # Each architecture builds on a runner of that architecture — no QEMU.
+  # Emulated arm64 crashed (SIGILL in V8-JITted code, exit 132) on every
+  # Intel-hosted runner sampled and passed on every AMD one, so the job
+  # failed or passed depending on which host GitHub happened to assign. With no binfmt
+  # handler installed, an accidental cross-arch build now fails loudly
+  # ("exec format error") instead of flaking.
   docker:
-    name: Docker Build
-    runs-on: ubuntu-latest
+    name: Docker Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@v4
@@ -155,12 +163,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build relay image (amd64 only, PR)
+      - name: Build relay image (${{ matrix.platform }})
         uses: docker/build-push-action@v6
         with:
           context: relay-server
           file: relay-server/Dockerfile
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           push: false
           load: true
           tags: groceryapp-relay:ci
@@ -194,6 +202,7 @@ jobs:
           docker rm -f relay-smoke
           exit 1
 
-      # docker-compose.ci.yml pins the build to amd64 (see its header).
-      - name: Build full compose stack (amd64)
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml build
+      # docker-compose.yml lists both platforms; bake reads the same file and
+      # narrows it to this runner's own, so the two legs together cover both.
+      - name: Build full compose stack (${{ matrix.platform }})
+        run: docker buildx bake -f docker-compose.yml --set '*.platform=${{ matrix.platform }}'
