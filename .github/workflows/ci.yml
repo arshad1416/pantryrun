@@ -148,6 +148,19 @@ jobs:
 
       - name: Set up QEMU (for ARM64 builds)
         uses: docker/setup-qemu-action@v3
+        with:
+          # Pinned: the default (binfmt:latest, QEMU 10.x) SIGILLs arm64 Node
+          # during `npm install` on Intel-hosted runners (Xeon 8370C / 6973P-C)
+          # and passes on AMD EPYC ones — so the job failed or passed depending
+          # on which host the runner landed on. 7.0.0 passes on both. Before
+          # bumping, re-measure on an Intel host; a green run on AMD proves
+          # nothing.
+          image: tonistiigi/binfmt:qemu-v7.0.0
+
+      # Whether emulation works depends on the host CPU (see above), so a
+      # result is only interpretable alongside the CPU it ran on.
+      - name: Report host CPU
+        run: grep -m1 'model name' /proc/cpuinfo
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
