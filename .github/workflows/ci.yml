@@ -139,38 +139,36 @@ jobs:
         run: npm test
 
   # ─── Docker Build (multi-arch) ────────────────────────────────────────────
+  # Each architecture builds on a runner of that architecture — no QEMU.
+  # Emulated arm64 crashed (SIGILL in V8-JITted code, exit 132) on every
+  # Intel-hosted runner sampled and passed on every AMD one, so the job
+  # failed or passed depending on which host GitHub happened to assign. With no binfmt
+  # handler installed, an accidental cross-arch build now fails loudly
+  # ("exec format error") instead of flaking.
   docker:
-    name: Docker Build
-    runs-on: ubuntu-latest
+    name: Docker Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up QEMU (for ARM64 builds)
-        uses: docker/setup-qemu-action@v3
-        with:
-          # Pinned: the default (binfmt:latest, QEMU 10.x) SIGILLs arm64 Node
-          # during `npm install` on Intel-hosted runners (Xeon 8370C / 6973P-C)
-          # and passes on AMD EPYC ones — so the job failed or passed depending
-          # on which host the runner landed on. 7.0.0 passes on both. Before
-          # bumping, re-measure on an Intel host; a green run on AMD proves
-          # nothing.
-          image: tonistiigi/binfmt:qemu-v7.0.0
-
-      # Whether emulation works depends on the host CPU (see above), so a
-      # result is only interpretable alongside the CPU it ran on.
-      - name: Report host CPU
-        run: grep -m1 'model name' /proc/cpuinfo
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build relay image (amd64 only, PR)
+      - name: Build relay image (${{ matrix.platform }})
         uses: docker/build-push-action@v6
         with:
           context: relay-server
           file: relay-server/Dockerfile
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           push: false
           load: true
           tags: groceryapp-relay:ci
@@ -204,5 +202,7 @@ jobs:
           docker rm -f relay-smoke
           exit 1
 
-      - name: Build full compose stack
-        run: docker compose build
+      # docker-compose.yml lists both platforms; bake reads the same file and
+      # narrows it to this runner's own, so the two legs together cover both.
+      - name: Build full compose stack (${{ matrix.platform }})
+        run: docker buildx bake -f docker-compose.yml --set '*.platform=${{ matrix.platform }}'
