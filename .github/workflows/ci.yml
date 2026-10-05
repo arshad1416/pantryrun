@@ -140,10 +140,10 @@ jobs:
 
   # ─── Docker Build (amd64) ─────────────────────────────────────────────────
   # Every push and PR builds and boot-tests the relay for amd64 only. The
-  # arm64 build ran here under QEMU emulation and intermittently crashed in
-  # `npm install` (qemu: uncaught target signal 4 — Illegal instruction),
-  # failing unrelated PRs and main; it now lives in arm64-build.yml (main
-  # pushes, nightly, manual), so arm64 is still built, just not per-PR.
+  # arm64 build used to run here under QEMU, which crashes `npm install`
+  # (Illegal instruction) on Intel runner hosts — measured 20/20 — and passes
+  # on AMD ones, so it failed PRs at random. arm64 now builds natively in
+  # arm64-build.yml (main, nightly, manual, and PRs touching the relay).
   docker:
     name: Docker Build
     runs-on: ubuntu-latest

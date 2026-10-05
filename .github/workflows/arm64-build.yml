@@ -1,35 +1,41 @@
-# arm64 relay build — off the per-PR path.
+# arm64 relay build — on a native arm64 runner, no emulation.
 #
-# docker-compose.yml ships the relay for linux/amd64 and linux/arm64. GitHub's
-# hosted runners are amd64, so arm64 is built under QEMU emulation, which
-# intermittently crashes in `npm install` (qemu: uncaught target signal 4 —
-# Illegal instruction, exit 132) regardless of the code. Running it on every
-# PR failed unrelated PRs and main, so it runs here instead: after each merge
-# to main, nightly, and on demand. A failure here is still a real signal to
-# look at — an arm64 break, or the emulator crash (re-run to tell them apart).
+# docker-compose.yml ships the relay for linux/amd64 and linux/arm64. This
+# used to be built on amd64 runners under QEMU, where `npm install` died with
+# `qemu: uncaught target signal 4 (Illegal instruction)` (exit 132). Measured
+# on 2026-10-05 across 10 runner hosts (diag/qemu7-probe): QEMU `latest`
+# crashed 20/20 on Intel Xeon hosts (6973P-C, Platinum 8370C) and never on
+# AMD EPYC hosts; qemu-v7.0.0 passed 20/20 on the same Intel hosts. Jobs land
+# on either vendor at random, so it looked flaky. Building on real arm64
+# hardware removes the emulator entirely (free for public repositories).
+#
+# Runs after each merge to main, nightly, on demand, and on PRs that touch the
+# relay image — so relay changes get arm64 coverage before they merge.
 name: arm64 Build
 
 on:
   push:
     branches: [main]
+  pull_request:
+    paths:
+      - 'relay-server/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/arm64-build.yml'
   schedule:
     - cron: '17 7 * * *' # daily, 03:17 Toronto (EDT)
   workflow_dispatch:
 
 concurrency:
-  group: arm64-build-${{ github.ref }}
-  cancel-in-progress: false
+  group: arm64-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   relay-arm64:
-    name: Relay image (linux/arm64, emulated)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    name: Relay image (linux/arm64, native)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -41,3 +47,30 @@ jobs:
           file: relay-server/Dockerfile
           platforms: linux/arm64
           push: false
+          load: true
+          tags: groceryapp-relay:arm64
+
+      # Same check as the amd64 job: the image must boot and answer /health.
+      - name: Smoke test — the arm64 image boots and serves /health
+        run: |
+          set -euo pipefail
+          docker run -d --name relay-smoke -p 8080:8080 \
+            -e RELAY_TOKEN=ci-smoke-token \
+            groceryapp-relay:arm64
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/health >/dev/null 2>&1; then
+              echo "relay answered /health after ${i}s"
+              docker rm -f relay-smoke
+              exit 0
+            fi
+            if [ -z "$(docker ps -q -f name=relay-smoke)" ]; then
+              echo "::error::relay container exited before serving /health"
+              docker logs relay-smoke || true
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "::error::relay never served /health within 30s"
+          docker logs relay-smoke || true
+          docker rm -f relay-smoke
+          exit 1
