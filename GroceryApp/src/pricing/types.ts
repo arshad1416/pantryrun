@@ -100,6 +100,8 @@ export interface SubmittedPrice {
   quantity: number;
   timestamp: number;
   submittedBy: string; // deviceId or family member
+  /** How `price` is quoted; see PriceResult.pricingBasis. */
+  pricingBasis?: 'package' | 'measure';
 }
 
 /** Normalized item name → store key for internal price maps */

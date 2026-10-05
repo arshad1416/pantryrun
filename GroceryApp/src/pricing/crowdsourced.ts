@@ -166,6 +166,27 @@ export class CrowdsourcedAdapter implements PriceAdapter {
 
     if (recent.length === 0) return null;
 
+    // A price someone logged is an edit: the latest one wins, and sample
+    // rows never dilute it (a median of [your $2.49, sample $3.89] used to
+    // return the sample).
+    const logged = recent.filter((s) => s.submittedBy !== SEED_SUBMITTER);
+    if (logged.length > 0) {
+      const latest = logged.reduce((a, b) => (b.timestamp >= a.timestamp ? b : a));
+      const norm = normalizeUnitPrice(latest.price, latest.quantity > 0 ? latest.quantity : 1, latest.unit);
+      return {
+        price: latest.price,
+        unitPrice: norm.unitPrice,
+        unit: latest.unit,
+        displayUnit: norm.displayUnit,
+        saleInfo: null,
+        source: { adapterId: this.id, tier: this.tier, storeId, storeName: latest.storeName },
+        timestamp: latest.timestamp,
+        confidence: getConfidenceLevel(logged.length),
+        ...(latest.quantity > 0 ? { packageSize: latest.quantity } : {}),
+        ...(latest.pricingBasis ? { pricingBasis: latest.pricingBasis } : {}),
+      };
+    }
+
     // Use median price (more robust than mean); its quantity is the package it bought
     const byPrice = [...recent].sort((a, b) => a.price - b.price);
     const median = byPrice[Math.floor(byPrice.length / 2)];

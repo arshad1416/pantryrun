@@ -27,6 +27,7 @@ import type { RootStackParamList } from '../navigation/deepLinks';
 import { usePriceStore } from '../pricing/price-store';
 import { useListStore } from '../state/useListStore';
 import { crowdsourcedAdapter } from '../pricing/crowdsourced';
+import { buildLoggedPrice } from '../pricing/logged-price';
 
 // ─── Props ──────────────────────────────────────────────────────────────────
 
@@ -63,6 +64,8 @@ export default function ItemEditScreen({ route, navigation }: Props) {
   const [showPriceForm, setShowPriceForm] = useState(false);
   const [priceInput, setPriceInput] = useState('');
   const [priceStoreInput, setPriceStoreInput] = useState('');
+  const [pricePackageInput, setPricePackageInput] = useState('');
+  const [pricePerWeight, setPricePerWeight] = useState<'kg' | 'lb' | null>(null);
   const submitCrowdPrice = usePriceStore((s) => s.submitCrowdPrice);
   const loadSinglePrice = usePriceStore((s) => s.loadSinglePrice);
   const prices = usePriceStore((s) => s.prices);
@@ -380,29 +383,55 @@ export default function ItemEditScreen({ route, navigation }: Props) {
                   placeholder="Store name"
                   placeholderTextColor="#bbb"
                 />
+                <View style={styles.weightRow}>
+                  {(['kg', 'lb'] as const).map((w) => (
+                    <TouchableOpacity
+                      key={w}
+                      style={[styles.weightChip, pricePerWeight === w && styles.weightChipActive]}
+                      onPress={() => setPricePerWeight(pricePerWeight === w ? null : w)}
+                      accessibilityRole="switch"
+                      accessibilityState={{ checked: pricePerWeight === w }}
+                    >
+                      <Text style={[styles.weightChipText, pricePerWeight === w && styles.weightChipTextActive]}>
+                        Price per {w}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                {!pricePerWeight && (
+                  <TextInput
+                    style={styles.priceInputField}
+                    value={pricePackageInput}
+                    onChangeText={setPricePackageInput}
+                    placeholder="Package size (e.g. 340 g, 2 L)"
+                    placeholderTextColor="#bbb"
+                  />
+                )}
                 <TouchableOpacity
                   style={styles.submitPriceBtn}
                   onPress={async () => {
                     if (!priceInput || !priceStoreInput || !existingItem) return;
-                    const price = parseFloat(priceInput);
-                    if (isNaN(price) || price <= 0) {
-                      Alert.alert('Invalid', 'Enter a valid price');
+                    const logged = buildLoggedPrice({
+                      itemName: existingItem.name,
+                      itemUnit: existingItem.unit,
+                      price: priceInput,
+                      storeName: priceStoreInput,
+                      packageSize: pricePerWeight ? undefined : pricePackageInput,
+                      perWeight: pricePerWeight ?? undefined,
+                      submittedBy: activeMemberId ?? 'unknown',
+                    });
+                    if (!logged.ok) {
+                      Alert.alert('Invalid', logged.error);
                       return;
                     }
                     try {
-                      await submitCrowdPrice({
-                        itemName: existingItem.name,
-                        storeId: priceStoreInput.toLowerCase().replace(/\s+/g, '_'),
-                        storeName: priceStoreInput,
-                        price,
-                        unit: existingItem.unit,
-                        quantity: existingItem.quantity,
-                        submittedBy: activeMemberId ?? 'unknown',
-                      }, existingItem.id, existingItem.name);
-                      Alert.alert('Submitted', 'Price logged successfully!');
+                      await submitCrowdPrice(logged.submission, existingItem.id, existingItem.name);
+                      Alert.alert('Submitted', 'Price logged. Comparisons now use it.');
                       setShowPriceForm(false);
                       setPriceInput('');
                       setPriceStoreInput('');
+                      setPricePackageInput('');
+                      setPricePerWeight(null);
                     } catch (err) {
                       Alert.alert('Error', 'Failed to submit price');
                     }
@@ -639,6 +668,29 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#333',
     marginBottom: 4,
+  },
+  weightRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+  },
+  weightChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#ddd',
+  },
+  weightChipActive: {
+    borderColor: '#16A34A',
+    backgroundColor: '#16A34A',
+  },
+  weightChipText: {
+    fontSize: 12,
+    color: '#555',
+  },
+  weightChipTextActive: {
+    color: '#FFFFFF',
   },
   priceMeta: {
     fontSize: 12,

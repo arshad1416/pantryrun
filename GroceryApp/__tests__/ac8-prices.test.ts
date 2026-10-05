@@ -110,7 +110,10 @@ describe('AC-8c: Crowd-Sourced Adapter', () => {
     expect(result).toBeNull();
   });
 
-  it('aggregates multiple submissions to median price', async () => {
+  // Behaviour change: this used to assert the MEDIAN (5.49). A logged price
+  // is an edit, so the latest entry wins — otherwise a correction could leave
+  // the comparison unchanged. Sample (seed) rows still use the median.
+  it('uses the latest logged price', async () => {
     const adapter = new CrowdsourcedAdapter();
 
     for (const price of [4.99, 5.49, 5.99]) {
@@ -127,8 +130,7 @@ describe('AC-8c: Crowd-Sourced Adapter', () => {
 
     const result = await adapter.getPrice('Bread', 'store_target');
     expect(result).not.toBeNull();
-    // Median of [4.99, 5.49, 5.99] = 5.49
-    expect(result!.price).toBeCloseTo(5.49, 2);
+    expect(result!.price).toBeCloseTo(5.99, 2);
   });
 
   it('returns prices for multiple items via getPrices', async () => {
