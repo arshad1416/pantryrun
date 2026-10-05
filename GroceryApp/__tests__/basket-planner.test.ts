@@ -302,7 +302,13 @@ describe('evidence mix', () => {
     for (const store of Object.values(prices)) {
       for (const pr of Object.values(store)) pr.evidence = { ...pr.evidence!, provenance: 'demo' };
     }
-    const p = plan(3, prices);
+    // Release builds hide sample prices entirely.
+    const hidden = plan(3, prices);
+    expect(hidden.proposals).toEqual([]);
+    expect(hidden.caveats).toContain('Built-in sample prices are hidden; log real prices or enable a price source to compare.');
+
+    // Development builds may compare them, labelled and never claimable.
+    const p = plan(3, prices, { ...ctx, includeDemo: true });
     expect(p.proposals[2]!.evidence.demo).toBe(10);
     expect(savingsAreClaimable(p.proposals[2]!)).toBe(false);
     expect(p.caveats).toContain('Some prices are sample data, not real store prices — savings are illustrative only.');

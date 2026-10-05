@@ -40,11 +40,36 @@ export function getEvidence(pr: PriceResult): OfferEvidence {
   if (pr.evidence) {
     return { observedAt: pr.timestamp, ...pr.evidence };
   }
+  // A flyer-tier result is a printed promotion even without evidence.
+  if (pr.source?.tier === 'flyer') {
+    return { provenance: 'flyer', sourceLabel: pr.source.adapterId, observedAt: pr.timestamp, isSale: true };
+  }
   return {
     provenance: 'unverified',
     sourceLabel: pr.source?.adapterId,
     observedAt: pr.timestamp,
   };
+}
+
+const TIER_LABELS: Record<string, string> = {
+  official: 'Store',
+  flyer: 'Flyer',
+  crowd: 'Crowd',
+  scraping: 'Web',
+};
+
+/**
+ * Short provenance label for a price badge, e.g. "Flyer · ends Oct 9",
+ * "Crowd · 3d ago", "Sample" — so a seeded or old price never reads as a
+ * current shelf price.
+ */
+export function describeEvidence(pr: PriceResult, now: number = Date.now()): string {
+  const ev = getEvidence(pr);
+  if (ev.provenance === 'demo') return 'Sample';
+  const tier = ev.provenance === 'manual' ? 'You' : TIER_LABELS[pr.source.tier] ?? pr.source.tier;
+  if (ev.validTo) return `${tier} · ends ${formatDay(ev.validTo).slice(4)}`;
+  const days = Math.floor((now - (ev.observedAt ?? pr.timestamp)) / DAY_MS);
+  return `${tier} · ${days <= 0 ? 'today' : `${days}d ago`}`;
 }
 
 /** A shopping window: first and last day, inclusive, as YYYY-MM-DD. */

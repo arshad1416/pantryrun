@@ -48,6 +48,11 @@ export interface PlannerContext {
   currency?: string;
   /** Pinned branch per store, when the shopper has chosen one. */
   branchByStore?: Record<string, string>;
+  /**
+   * Use built-in sample (demo) prices. Development builds only — in a
+   * release build a sample price is excluded, never compared.
+   */
+  includeDemo?: boolean;
 }
 
 export type Verdict = 'exact' | 'substitute' | 'excluded';
@@ -151,6 +156,8 @@ function offerAttributes(ev: OfferEvidence): string[] {
 
 function isVerifiedSale(pr: PriceResult, ev: OfferEvidence): boolean {
   if (ev.isSale === true) return true;
+  // A printed flyer price is a promotion unless the source says otherwise.
+  if (ev.provenance === 'flyer' && ev.isSale !== false) return true;
   const s = pr.saleInfo;
   return !!s && s.isOnSale && s.unitPriceVsRegular < 0;
 }
@@ -181,6 +188,10 @@ export function evaluateCandidate(
   };
   const exclude = (reason: string): Candidate => ({ ...base, verdict: 'excluded', reasons: [...base.reasons, reason] });
 
+  if (ev.provenance === 'demo' && !ctx.includeDemo) {
+    return exclude('sample price — not a real store price');
+  }
+
   // Validity, freshness, stock.
   const validity = evaluateValidity(ev, ctx.window, ctx.now);
   if (validity.status === 'excluded') return exclude(validity.reason);
@@ -205,8 +216,11 @@ export function evaluateCandidate(
     return exclude(`offer is for "${ev.productName}"`);
   }
   const attrs = offerAttributes(ev);
+  const nameWords = new Set(
+    (ev.productName ?? '').toLowerCase().split(/[^a-z0-9%]+/).filter(Boolean),
+  );
   for (const req of line.requirements) {
-    if (attrs.includes(req.attr)) continue;
+    if (attrs.includes(req.attr) || nameWords.has(req.attr)) continue;
     if (req.exclusive) {
       const conflicting = attrs.find((a) => a !== req.attr && variantGroup(a) === req.group);
       if (conflicting) {
@@ -469,6 +483,9 @@ export function planBasket(
   const allMix = emptyMix();
   for (const p of proposals) for (const k of Object.keys(allMix) as OfferProvenance[]) allMix[k] += p.evidence[k];
   if (allMix.demo > 0) caveats.push('Some prices are sample data, not real store prices — savings are illustrative only.');
+  if (analyses.some((a) => a.candidates.some((c) => c.reasons.includes('sample price — not a real store price')))) {
+    caveats.push('Built-in sample prices are hidden; log real prices or enable a price source to compare.');
+  }
   if (allMix.unverified > 0 || allMix.flyer > 0) caveats.push('Some prices are not verified at your store — check before you go.');
   if (eligibleIds.length > 0 && !proposals.some((p) => p.complete)) {
     caveats.push('No complete comparison is available: no route within the stop limit buys every line.');

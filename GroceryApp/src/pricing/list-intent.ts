@@ -140,6 +140,37 @@ export interface LineSource {
   isChecked?: boolean;
 }
 
+/**
+ * Requirements a note states outright: "must be X", "only X", "X only"
+ * ("lactose-free only", "must be Tastee"). "sale only" is handled separately.
+ */
+const NOTE_REQUIREMENT_RES = [
+  /\bmust\s+be\s+([a-z0-9][a-z0-9 -]*)/gi,
+  /\bonly\s+([a-z0-9][a-z0-9 -]*)/gi,
+  /\b([a-z0-9][a-z0-9-]*)\s+only\b/gi,
+];
+
+function noteRequirements(notes: string): { reqs: Requirement[]; rest: string } {
+  const reqs: Requirement[] = [];
+  let rest = notes.replace(SALE_ONLY_RE, ' ');
+  for (const re of NOTE_REQUIREMENT_RES) {
+    rest = rest.replace(re, (_m, phrase: string) => {
+      const known = parseVariantAttributes(phrase);
+      for (const attr of known) {
+        const v = VARIANT_BY_ATTR.get(attr)!;
+        reqs.push({ attr, group: v.group, exclusive: v.exclusive });
+      }
+      if (known.length === 0) {
+        for (const w of phrase.toLowerCase().split(/[\s-]+/)) {
+          if (w.length >= 2 && !STOP_WORDS.has(w)) reqs.push({ attr: w, group: `note:${w}`, exclusive: false });
+        }
+      }
+      return ' ';
+    });
+  }
+  return { reqs, rest };
+}
+
 function requirementsFrom(name: string): Requirement[] {
   const reqs: Requirement[] = [];
   for (const attr of parseVariantAttributes(name)) {
@@ -178,14 +209,15 @@ export function deriveBasketLine(item: LineSource): BasketLine {
   const hintMatch = notes.match(STORE_HINT_RE);
   const storeHint = hintMatch ? (hintMatch[1] ?? hintMatch[2] ?? '').trim() || undefined : undefined;
 
-  const cleanNotes = tidy(
-    notes
-      .replace(SALE_ONLY_RE, '')
-      .replace(NO_SUBS_RE, '')
-      .replace(SUBS_OK_RE, '')
-      .replace(STORE_HINT_RE, ''),
+  const fromNotes = noteRequirements(
+    notes.replace(NO_SUBS_RE, '').replace(SUBS_OK_RE, '').replace(STORE_HINT_RE, ''),
   );
+  const cleanNotes = tidy(fromNotes.rest);
   const displayName = tidy(name.replace(SALE_ONLY_RE, '').replace(/\(\s*\)/g, ''));
+  const requirements = requirementsFrom(displayName);
+  for (const r of fromNotes.reqs) {
+    if (!requirements.some((x) => x.attr === r.attr)) requirements.push(r);
+  }
 
   let quantity: Quantity | null;
   let quantitySource: QuantitySource;
@@ -212,7 +244,7 @@ export function deriveBasketLine(item: LineSource): BasketLine {
     checked: item.isChecked === true,
     quantity,
     quantitySource,
-    requirements: requirementsFrom(displayName),
+    requirements,
     saleOnly,
     allowSubstitution,
     storeHint,

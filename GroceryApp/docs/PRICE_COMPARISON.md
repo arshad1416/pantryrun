@@ -14,7 +14,8 @@ checked), so the storage schema does not change.
 |---|---|
 | `GREEN`, `red`, `whole`, `2%`, `skim`, `lactose-free`, `JAMAICAN`, `organic`, `seedless`, `unsalted`… | Hard requirement. Values in the same group (colour, milk fat, salt) contradict each other. |
 | Any other word in ALL CAPS | A requirement the offer must evidence. It is never contradicted, only unconfirmed. |
-| `sale only`, `only if on sale` | Only a verified, in-window sale price can be used. |
+| `sale only`, `only if on sale` | Only a verified, in-window sale price can be used. A flyer price counts as a sale unless the source says otherwise. |
+| notes `must be X`, `only X`, `X only` (`lactose-free only`, `must be Tastee`) | Requirements, like variant words in the name. An offer evidences one through its attributes or a word in its product name. |
 | `no subs` / `subs ok`, `any brand` | Whether an offer without evidence for a requirement may be used as a labelled **substitute**. The default is no. |
 | `store hint: Costco`, `@Costco` | Context only. It is never a mandatory stop. |
 | anything else in notes (`for kids`) | Stays a note. No allergy, brand or medical rule is inferred from it. |
@@ -39,7 +40,7 @@ The source's provenance is always shown:
 | `manual` | "Log Price". The latest entry wins, so an edit takes effect. | 14 days |
 | `flyer` | Flipp flyer deal, with its printed end date | through `validTo` (7 days if no date) |
 | `unverified` | adapter output without validity info | 24 hours |
-| `demo` | built-in seed rows ("Sample price — not a real store price") | never backs a savings claim |
+| `demo` | built-in seed rows ("Sample price — not a real store price") | **excluded in release builds**; compared only in development builds (`includeDemo: __DEV__`), and never backs a savings claim |
 
 Offers are judged against the **shopping window** you choose (Today / Tomorrow /
 Next 7 days), not the day they were fetched. **Fail closed** means the offer is
@@ -54,6 +55,10 @@ excluded from the comparison and the reason is shown. The record itself is kept.
   for example "price valid only through Wed Oct 7".
 - Advancing the window past `validTo` drops the offer with no list edit. The list
   screen re-plans every minute and whenever the window changes.
+
+Flyer deals are matched to items by whole words (`deal-matching.ts`, shared
+with `dealMatcher`), so "milk" never matches "buttermilk", and a multi-word
+name needs two hits. Cached deals whose end date has passed are skipped.
 
 ## 3. Quantities and packs (`units.ts`)
 
@@ -116,8 +121,12 @@ the file header.
 - Flyer-scan, cloud-flyer, store-prices, Instacart and scraping results still
   have no evidence, so they count as `unverified`. Flipp deals carry their end
   date but have no branch or package size.
-- The demo seed rows still ship. They are labelled as sample data and never back
-  a claimable saving.
+- The demo seed rows still ship, but are hidden from comparisons in release
+  builds.
+- Merged with PR #3's `basket.ts` work. Its regression findings run against
+  this planner in `__tests__/basket-correctness.test.ts`. One behaviour was
+  deliberately not kept: a quantity that can't be reconciled with how the
+  offer is sold is held, not assumed to be one package.
 - Voice input still defaults a missing quantity to "1 each" (explicit). Only
   checklist import marks missing quantities as assumptions.
 - Membership choices and the shopping window are kept in memory and reset on

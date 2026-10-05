@@ -120,7 +120,7 @@ describe('screen-level probes', () => {
       ...legacy(1.99),
       evidence: { provenance: 'demo', packageSize: { amount: 6, unit: 'pcs' }, observedAt: NOW },
     };
-    const p = planBasket([{ id: 'apples', name: 'Apples', quantity: 6, unit: 'pcs' }], { nf: { apples: pack }, x: {} }, {}, 3, ctx);
+    const p = planBasket([{ id: 'apples', name: 'Apples', quantity: 6, unit: 'pcs' }], { nf: { apples: pack }, x: {} }, {}, 3, { ...ctx, includeDemo: true });
     expect(p.proposals[0]!.merchandiseTotal).toBe(1.99);
     expect(p.proposals[0]!.assignments[0]!.candidate.packs).toBe(1);
   });

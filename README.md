@@ -26,7 +26,7 @@ on — see [Where prices come from](#-where-prices-come-from)), and a multi-stop
 - It also needs price data to compare anything, and pricing is opt-in and empty by default (see below) — so a Plus subscriber who has not enabled pricing still gets no savings estimates.
 - Compares routes of **1, 2 or 3 stores** that buy the same items. The search is exhaustive and coverage-first, so a store carrying two of ten items can never "win" on its total. Pack sizes are respected (500 g from 340 g packs = 2 packs).
 - Every store and route card shows its **coverage** (e.g. "2 of 10 items") and where its prices came from (entered by you / flyer / unverified / sample).
-- Lines that can't be compared are **held** and shown with their reason, never priced at $0. This covers unknown quantity, no offer matching a variant like GREEN grapes, and a sale-only item with no valid sale.
+- Built-in sample prices are hidden in release builds. Lines that can't be compared are **held** and shown with their reason, never priced at $0. This covers unknown quantity, no offer matching a variant like GREEN grapes, and a sale-only item with no valid sale.
 - Offers are checked against the **shopping day(s)** you pick. Expired or stale offers drop out. A sale ending mid-week is shown with its end date.
 - Savings are merchandise-only (before tax, travel, fees and memberships), and are only stated between routes covering the same items. Rules: [`GroceryApp/docs/PRICE_COMPARISON.md`](GroceryApp/docs/PRICE_COMPARISON.md).
 - **Dynamic List Splits**: tapping a route splits the list into stop-by-stop sections (e.g. `Stop 1: No Frills`) with stop subtotals, plus "Not available on this route" and "Held" sections.

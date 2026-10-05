@@ -214,6 +214,8 @@ export default function GroceryListScreen({ route, navigation }: Props) {
       window: effectiveWindow(shoppingWindow, now),
       now,
       memberships,
+      // Built-in sample prices are compared only in development builds.
+      includeDemo: __DEV__,
     });
   }, [items, listId, perStorePrices, storeNameMap, maxStops, shoppingWindow, memberships, clockTick]);
 
@@ -288,7 +290,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
   const queriedNames = useRef<Record<string, string>>({});
   const itemNamesKey = useMemo(
     () => Object.values(items)
-      .filter((item) => !item.isDeleted && item.listId === listId)
+      .filter((item) => !item.isDeleted && item.listId === listId && !item.isChecked)
       .map((item) => `${item.id}\u0000${item.name}`)
       .sort()
       .join('\n'),
@@ -298,8 +300,9 @@ export default function GroceryListScreen({ route, navigation }: Props) {
   useEffect(() => {
     const storeIds = availableStores.map(s => s.storeId);
     if (storeIds.length === 0 || !items || Object.keys(items).length === 0) return;
+    // Checked items are already in the cart: never look them up.
     const visibleItems = Object.values(items).filter(
-      (item) => !item.isDeleted && item.listId === listId,
+      (item) => !item.isDeleted && item.listId === listId && !item.isChecked,
     );
     const FRESHNESS_THRESHOLD = 60 * 60 * 1000;
     const staleItems = visibleItems.filter((item) => {
