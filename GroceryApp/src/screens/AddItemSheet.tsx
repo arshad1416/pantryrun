@@ -41,6 +41,8 @@ interface AddItemSheetProps {
   listId: string;
   onClose: () => void;
   onItemAdded?: () => void;
+  /** Open the Google Keep import sheet */
+  onImportList?: () => void;
 }
 
 // ─── Common Quick-Add Items ──────────────────────────────────────────────────
@@ -125,6 +127,7 @@ export default function AddItemSheet({
   listId,
   onClose,
   onItemAdded,
+  onImportList,
 }: AddItemSheetProps) {
   // Store
   const addItem = useGroceryStore((s) => s.addItem);
@@ -629,6 +632,20 @@ export default function AddItemSheet({
               <Text style={styles.voiceBtnText}>📷 Scan Barcode</Text>
             </TouchableOpacity>
           </View>
+          {onImportList && (
+            <TouchableOpacity
+              style={[styles.importBtn, { borderColor: theme.border, backgroundColor: theme.cardBg }]}
+              onPress={() => {
+                resetForm();
+                onImportList();
+              }}
+              disabled={adding}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+            >
+              <Text style={[styles.importBtnText, { color: theme.text }]}>📋 Import from Google Keep</Text>
+            </TouchableOpacity>
+          )}
 
           {/* Voice parse result indicator */}
           {voiceParsed && (
@@ -953,6 +970,17 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 14,
     gap: 6,
+  },
+  importBtn: {
+    marginTop: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    padding: 14,
+    alignItems: 'center',
+  },
+  importBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   voiceBtnDisabled: {
     flex: 1,
