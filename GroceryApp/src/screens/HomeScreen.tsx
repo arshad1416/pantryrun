@@ -353,8 +353,8 @@ export default function HomeScreen({ navigation }: Props) {
         setDealsLoading(false);
         return;
       }
-      if (!isTursoReady()) {
-        setDealsError('turso_missing');
+      if (!settings.relayUrl) {
+        setDealsError('relay_missing');
         setDealsLoading(false);
         return;
       }
@@ -724,7 +724,7 @@ export default function HomeScreen({ navigation }: Props) {
       );
     }
 
-    if (dealsError === 'fsa_missing' || dealsError === 'turso_missing' || (!fsa && !dealsError)) {
+    if (dealsError === 'fsa_missing' || dealsError === 'relay_missing' || (!fsa && !dealsError)) {
       return (
         <View style={{ flex: 1 }}>
           {renderDealsHeader()}
@@ -736,7 +736,7 @@ export default function HomeScreen({ navigation }: Props) {
             <Text style={[styles.emptySubtitle, { color: theme.secondaryText, textAlign: 'center', marginBottom: 20 }]}>
               {!fsa
                 ? 'Please configure your FSA (postal code prefix) in settings to see local grocery flyers.'
-                : 'Please connect a Turso database in settings to query local flyer deals.'}
+                : 'Set up your relay in Settings to see this week\'s flyer deals.'}
             </Text>
             <TouchableOpacity
               style={[styles.createBtn, { backgroundColor: theme.primary }]}

@@ -32,15 +32,18 @@ import type { FlippDealRow } from '../src/services/dealMatcher';
 // ─── Mocks (Flipp adapter dependencies) ─────────────────────────────────────
 
 let mockDeals: FlippDealRow[] = [];
-jest.mock('../src/services/dealMatcher', () => ({
-  fetchDealsForFSA: async () => mockDeals,
+jest.mock('../src/pricing/relay-client', () => ({
+  relayGetJson: async () => ({ kind: 'deals', fsa: 'L0R', fetchedAt: new Date().toISOString(), rows: mockDeals }),
+  RelayRequestError: class extends Error {},
 }));
 jest.mock('../src/config/settings', () => ({
-  getSettings: () => ({ flyerScanEnabled: true, flippFsa: 'L0R' }),
+  getSettings: () => ({ relayUrl: 'wss://relay.test', flippFsa: 'L0R' }),
 }));
 
 // eslint-disable-next-line import/first
 import { flippDealsAdapter } from '../src/pricing/flipp-deals-adapter';
+// eslint-disable-next-line import/first
+import { _resetLivePrices } from '../src/pricing/live-prices';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -192,7 +195,7 @@ describe('3. expired, stale and demo prices are ineligible', () => {
   });
 
   it('Flipp: expired cached deals are skipped; timestamp is fetch time, validTo is the offer end', async () => {
-    flippDealsAdapter.clearCache();
+    _resetLivePrices();
     const ends = new Date(NOW + 3 * DAY);
     mockDeals = [
       deal('Milk 4 L', 'Fortinos', 3.0, new Date(NOW - DAY)), // ended
@@ -271,7 +274,7 @@ describe('5. notes and variants constrain matches', () => {
   });
 
   it('Flipp matching is whole-word: "milk" does not match buttermilk', async () => {
-    flippDealsAdapter.clearCache();
+    _resetLivePrices();
     mockDeals = [deal('Buttermilk 1 L', 'Metro', 2.49, new Date(NOW + 5 * DAY))];
     expect(await flippDealsAdapter.getPrice('milk', 'metro')).toBeNull();
   });

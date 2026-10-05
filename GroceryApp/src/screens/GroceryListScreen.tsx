@@ -43,11 +43,10 @@ import { proposalsFromAnalysis } from '../pricing/stop-optimizer';
 import { analyzeBasket, planForStores, selectBasketItems, type PlanContext } from '../pricing/basket';
 import { addLocalDays, deviceTimeZone, localDate } from '../pricing/eligibility';
 import type { PlanOptions } from '../components/StopOptimizer';
-import { flippDealsAdapter } from '../pricing/flipp-deals-adapter';
-import { crowdsourcedAdapter } from '../pricing/crowdsourced';
+import { discoverStores } from '../pricing/store-discovery';
+import { getLivePriceStatus, refreshLivePrices } from '../pricing/live-prices';
 import { getSettings, updateSettings } from '../config/settings';
 import { fetchDealsForFSA, matchListItems, type FlippDealRow, type DealMatch } from '../services/dealMatcher';
-import { isTursoReady } from '../services/tursoClient';
 
 // Extracted components
 import SyncIndicator from '../components/SyncIndicator';
@@ -173,6 +172,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
   const [selectedStoreId, setSelectedStoreId] = useState<string | null>(null);
   const [selectedRouteNumStops, setSelectedRouteNumStops] = useState<number | null>(null);
   const [availableStores, setAvailableStores] = useState<{ storeId: string; storeName: string }[]>([]);
+  const [liveStatus, setLiveStatus] = useState(getLivePriceStatus);
   const [priceSummaryItem, setPriceSummaryItem] = useState<{ id: string; name: string } | null>(null);
   const [activeCategory, setActiveCategory] = useState<string>('All');
   const [activeTab, setActiveTab] = useState<TabName>('lists');
@@ -295,19 +295,12 @@ export default function GroceryListScreen({ route, navigation }: Props) {
   }, [listId, loadItems]);
 
   useEffect(() => {
-    Promise.all([
-      flippDealsAdapter.getAvailableStores().catch(() => [] as { storeId: string; storeName: string }[]),
-      crowdsourcedAdapter.getAvailableStores().catch(() => [] as { storeId: string; storeName: string }[]),
-    ]).then(([flippStores, crowdStores]) => {
-      const all = [...flippStores, ...crowdStores];
-      const seen = new Set<string>();
-      const unique = all.filter(s => {
-        if (seen.has(s.storeId)) return false;
-        seen.add(s.storeId);
-        return true;
-      });
-      setAvailableStores(unique);
-    }).catch(err => console.warn('[stores] Failed to load stores:', err));
+    discoverStores()
+      .then((stores) => {
+        setAvailableStores(stores);
+        setLiveStatus(getLivePriceStatus());
+      })
+      .catch(err => console.warn('[stores] Failed to load stores:', err));
   }, []);
 
   // Fetch prices for basket items whose price is missing, older than an hour,
@@ -713,16 +706,20 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     navigation.navigate('Settings');
   }, [navigation]);
 
-  const handleRefreshPrices = useCallback(() => {
-    const storeIds = availableStores.map(s => s.storeId);
-    if (storeIds.length === 0) return;
-    if (basketItems.length > 0) {
-      for (const item of basketItems) fetchedNames.current[item.id] = item.name;
-      refreshAllPrices(
-        basketItems.map((item) => ({ id: item.id, name: item.name })),
-        storeIds,
-      ).catch(() => {});
-    }
+  const handleRefreshPrices = useCallback(async () => {
+    // Ask the relay again (not the 15-minute snapshot), then re-discover
+    // stores — a new flyer week can add or drop merchants.
+    await refreshLivePrices(getSettings().flippFsa);
+    setLiveStatus(getLivePriceStatus());
+    const stores = await discoverStores().catch(() => availableStores);
+    setAvailableStores(stores);
+    const storeIds = stores.map(s => s.storeId);
+    if (storeIds.length === 0 || basketItems.length === 0) return;
+    for (const item of basketItems) fetchedNames.current[item.id] = item.name;
+    refreshAllPrices(
+      basketItems.map((item) => ({ id: item.id, name: item.name })),
+      storeIds,
+    ).catch(() => {});
   }, [basketItems, availableStores, refreshAllPrices]);
 
   const handleQuantityChange = useCallback(
@@ -752,8 +749,8 @@ export default function GroceryListScreen({ route, navigation }: Props) {
         setFsaDealsLoading(false);
         return;
       }
-      if (!isTursoReady()) {
-        setFsaDealsError('turso_missing');
+      if (!settings.relayUrl) {
+        setFsaDealsError('relay_missing');
         setFsaDealsLoading(false);
         return;
       }
@@ -842,7 +839,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
       );
     }
 
-    if (fsaDealsError === 'fsa_missing' || fsaDealsError === 'turso_missing' || (!fsa && !fsaDealsError)) {
+    if (fsaDealsError === 'fsa_missing' || fsaDealsError === 'relay_missing' || (!fsa && !fsaDealsError)) {
       return (
         <View style={styles.emptyContainer}>
           <Ionicons name="pricetag-outline" size={48} color={theme.secondaryText} />
@@ -852,7 +849,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
           <Text style={[styles.emptySubtitle, { color: theme.secondaryText, textAlign: 'center', marginBottom: 20 }]}>
             {!fsa
               ? 'Please configure your FSA (postal code prefix) in settings to match list items with flyer deals.'
-              : 'Please connect a Turso database in settings to match list items with flyer deals.'}
+              : 'Set up your relay in Settings to match list items with this week\'s flyer deals.'}
           </Text>
           <TouchableOpacity
             style={[styles.createBtn, { backgroundColor: theme.primary }]}
@@ -1109,6 +1106,19 @@ export default function GroceryListScreen({ route, navigation }: Props) {
               </Text>
             </TouchableOpacity>
           )}
+          {/* Live prices couldn't refresh — say what's being shown */}
+          {liveStatus.state === 'failed' && (
+            <View
+              style={[styles.livePriceBanner, { backgroundColor: theme.unassignedBg, borderColor: theme.unassignedBorder }]}
+              accessibilityRole="alert"
+            >
+              <Ionicons name="cloud-offline-outline" size={14} color={theme.unassignedText} />
+              <Text style={[styles.livePriceBannerText, { color: theme.unassignedText }]}>
+                {liveStatus.detail ?? 'Live prices unavailable — showing last known.'}
+              </Text>
+            </View>
+          )}
+
           {/* Find Prices button */}
           {!priceLoading && (
             <TouchableOpacity
@@ -1459,6 +1469,22 @@ const styles = StyleSheet.create({
   findPricesText: {
     fontSize: 13,
     fontWeight: '600',
+  },
+  livePriceBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  livePriceBannerText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '500',
   },
   priceSummaryBanner: {
     flexDirection: 'row',

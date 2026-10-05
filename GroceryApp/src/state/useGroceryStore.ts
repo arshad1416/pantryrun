@@ -47,22 +47,10 @@ function schedulePriceLookup(item: { id: string; name: string }, listId: string)
 
     try {
       const { usePriceStore } = await import('../pricing/price-store');
-      const { flippDealsAdapter } = await import('../pricing/flipp-deals-adapter');
-      const { crowdsourcedAdapter } = await import('../pricing/crowdsourced');
+      const { discoverStores } = await import('../pricing/store-discovery');
 
-      // Get available store IDs from all local adapters for batch lookup
-      let storeIds: string[] = [];
-      const [flippStores, crowdStores] = await Promise.all([
-        flippDealsAdapter.isAvailable() ? flippDealsAdapter.getAvailableStores().catch(() => []) : Promise.resolve([]),
-        crowdsourcedAdapter.isAvailable() ? crowdsourcedAdapter.getAvailableStores().catch(() => []) : Promise.resolve([]),
-      ]);
-      const seen = new Set<string>();
-      for (const s of [...flippStores, ...crowdStores]) {
-        if (!seen.has(s.storeId)) {
-          seen.add(s.storeId);
-          storeIds.push(s.storeId);
-        }
-      }
+      // Every store with prices for this user: flyer deals, shelf prices, crowd
+      const storeIds = (await discoverStores()).map((s) => s.storeId);
 
       if (storeIds.length > 0) {
         await usePriceStore.getState().loadPricesForAllStores(batch, storeIds);

@@ -107,20 +107,42 @@ describe('persisted-settings migration strips Turso credentials', () => {
   });
 });
 
-describe('FlippDealsAdapter no longer depends on Turso credentials', () => {
-  it('isAvailable() is driven only by the flyer-scan opt-in', async () => {
+describe('Live-price adapters read the relay, never Turso', () => {
+  // Prices returned post-v1 "behind a proper relay endpoint" (Option B): the
+  // relay reads the scraper's Turso database with its own read-only token.
+  // On the device, availability depends on a configured relay only.
+  it('isAvailable() follows the relay URL; Turso stays uninitialised', async () => {
     const { initSettings, updateSettings, clearSettings } = await import(
       '../src/config/settings'
     );
     const { flippDealsAdapter } = await import('../src/pricing/flipp-deals-adapter');
+    const { storePricesAdapter } = await import('../src/pricing/store-prices-adapter');
+    const { isTursoReady } = await import('../src/services/tursoClient');
 
     await clearSettings();
     await initSettings();
 
-    await updateSettings({ flyerScanEnabled: false });
+    await updateSettings({ relayUrl: '' });
     expect(flippDealsAdapter.isAvailable()).toBe(false);
+    expect(storePricesAdapter.isAvailable()).toBe(false);
 
-    await updateSettings({ flyerScanEnabled: true });
+    await updateSettings({ relayUrl: 'wss://relay.example.com' });
     expect(flippDealsAdapter.isAvailable()).toBe(true);
+    expect(storePricesAdapter.isAvailable()).toBe(true);
+    expect(isTursoReady()).toBe(false);
+  });
+
+  it('no price source imports the Turso client', () => {
+    const files = [
+      'src/pricing/flipp-deals-adapter.ts',
+      'src/pricing/store-prices-adapter.ts',
+      'src/pricing/live-prices.ts',
+      'src/pricing/relay-client.ts',
+      'src/services/dealMatcher.ts',
+    ];
+    for (const f of files) {
+      const src = fs.readFileSync(path.join(APP_ROOT, f), 'utf-8');
+      expect({ file: f, importsTurso: /tursoClient/.test(src) }).toEqual({ file: f, importsTurso: false });
+    }
   });
 });

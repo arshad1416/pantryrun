@@ -25,6 +25,7 @@ const path = require('path');
 
 const { UsedTokensStore } = require('./tokens/used-tokens-store');
 const { collectBody } = require('./lib/collect-body');
+const { handlePricesRequest, cleanPricesState } = require('./prices/prices-server');
 
 // ─── Dedicated State Directory ──────────────────────────────────────────────
 // When RELAY_DATA_DIR is set, ALL persisted relay state (relay-state.json,
@@ -884,6 +885,7 @@ function cleanRateLimiters() {
 
 // Clean rate limiters every 5 minutes
 setInterval(cleanRateLimiters, 5 * 60_000);
+setInterval(() => cleanPricesState(), 5 * 60_000);
 
 // ─── HTTP Server ─────────────────────────────────────────────────────────────
 
@@ -1217,6 +1219,12 @@ const server = createServer((req, res) => {
   if (req.url === '/api/extract/flyer' && req.method === 'POST') {
     const { handleExtractRequest } = require('./extract/extract-server');
     return handleExtractRequest(req, res, enrolledDevices);
+  }
+
+  // GET /api/prices/{deals,shelf}?fsa= — live prices from the operator's
+  // scraper, read server-side from Turso (fails closed without TURSO_* env).
+  if (req.url.startsWith('/api/prices/')) {
+    return handlePricesRequest(req, res, enrolledDevices);
   }
 
   // Voice-assistant + OAuth account-linking endpoints (see ASSISTANT_INTEGRATION
