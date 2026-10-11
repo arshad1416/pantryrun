@@ -38,9 +38,9 @@ describe('AC-7: Voice Subsystem — NLP Parser', () => {
   // ── Basic Patterns ──────────────────────────────────────────────────────
 
   describe('Basic Patterns', () => {
-    it('parses "2% milk x2" → name:"2% Milk", qty:2, unit:"each"', () => {
+    it('parses "2% milk x2" → name:"2% Milk", qty:2, unit:"" (packages)', () => {
       const result = parseVoiceText('2% milk x2');
-      assertItem(result, { name: '2% Milk', quantity: 2, unit: 'each' });
+      assertItem(result, { name: '2% Milk', quantity: 2, unit: '' });
     });
 
     it('parses "half a kilo of chicken breast" → qty:0.5, unit:"kg"', () => {
@@ -57,9 +57,9 @@ describe('AC-7: Voice Subsystem — NLP Parser', () => {
       assertItem(result, { name: 'Eggs', quantity: 12, unit: 'each' });
     });
 
-    it('parses "bananas" → fallback: qty:1, unit:"each"', () => {
+    it('parses "bananas" → fallback: qty:1, unit:"" (packages)', () => {
       const result = parseVoiceText('bananas');
-      assertItem(result, { name: 'Bananas', quantity: 1, unit: 'each' });
+      assertItem(result, { name: 'Bananas', quantity: 1, unit: '' });
     });
 
     it('parses "1kg of rice" → qty:1, unit:"kg"', () => {
@@ -77,13 +77,13 @@ describe('AC-7: Voice Subsystem — NLP Parser', () => {
       assertItem(result, {
         name: 'Organic Valley 2% Milk',
         quantity: 2,
-        unit: 'each',
+        unit: '',
       });
     });
 
     it('parses "add milk" → strips "add"', () => {
       const result = parseVoiceText('add milk');
-      assertItem(result, { name: 'Milk', quantity: 1, unit: 'each' });
+      assertItem(result, { name: 'Milk', quantity: 1, unit: '' });
     });
   });
 
@@ -92,12 +92,12 @@ describe('AC-7: Voice Subsystem — NLP Parser', () => {
   describe('Quantity patterns', () => {
     it('parses "x3" suffix: "apples x3"', () => {
       const result = parseVoiceText('apples x3');
-      assertItem(result, { name: 'Apples', quantity: 3, unit: 'each' });
+      assertItem(result, { name: 'Apples', quantity: 3, unit: '' });
     });
 
     it('parses decimal "x1.5": "chicken x1.5"', () => {
       const result = parseVoiceText('chicken x1.5');
-      assertItem(result, { name: 'Chicken', quantity: 1.5, unit: 'each' });
+      assertItem(result, { name: 'Chicken', quantity: 1.5, unit: '' });
     });
 
     it('parses "2 kg of potatoes"', () => {
@@ -171,7 +171,7 @@ describe('AC-7: Voice Subsystem — NLP Parser', () => {
   describe('Filler word stripping', () => {
     it('strips leading "please"', () => {
       const result = parseVoiceText('please add milk');
-      assertItem(result, { name: 'Milk', quantity: 1, unit: 'each' });
+      assertItem(result, { name: 'Milk', quantity: 1, unit: '' });
     });
 
     it('strips "can I get" prefix', () => {
@@ -179,7 +179,7 @@ describe('AC-7: Voice Subsystem — NLP Parser', () => {
       assertItem(result, {
         name: '2% Milk',
         quantity: 2,
-        unit: 'each',
+        unit: '',
       });
     });
 
@@ -204,12 +204,12 @@ describe('AC-7: Voice Subsystem — NLP Parser', () => {
 
     it('strips trailing "please"', () => {
       const result = parseVoiceText('add milk please');
-      assertItem(result, { name: 'Milk', quantity: 1, unit: 'each' });
+      assertItem(result, { name: 'Milk', quantity: 1, unit: '' });
     });
 
     it('strips "we need" prefix', () => {
       const result = parseVoiceText('we need bananas');
-      assertItem(result, { name: 'Bananas', quantity: 1, unit: 'each' });
+      assertItem(result, { name: 'Bananas', quantity: 1, unit: '' });
     });
 
     it('strips "i would like to get" prefix', () => {
@@ -217,7 +217,7 @@ describe('AC-7: Voice Subsystem — NLP Parser', () => {
       assertItem(result, {
         name: '2% Milk',
         quantity: 2,
-        unit: 'each',
+        unit: '',
       });
     });
   });
@@ -252,7 +252,7 @@ describe('AC-7: Voice Subsystem — NLP Parser', () => {
       const result = parseVoiceText('');
       expect(result.name).toBe('');
       expect(result.quantity).toBe(1);
-      expect(result.unit).toBe('each');
+      expect(result.unit).toBe('');
       expect(result.confidence).toBe(0);
     });
 
@@ -265,12 +265,12 @@ describe('AC-7: Voice Subsystem — NLP Parser', () => {
 
     it('special characters in item name', () => {
       const result = parseVoiceText('Coca-Cola x2');
-      assertItem(result, { name: 'Coca-Cola', quantity: 2, unit: 'each' });
+      assertItem(result, { name: 'Coca-Cola', quantity: 2, unit: '' });
     });
 
     it('item name with numbers: "2% milk"', () => {
       const result = parseVoiceText('2% milk');
-      assertItem(result, { name: '2% Milk', quantity: 1, unit: 'each' });
+      assertItem(result, { name: '2% Milk', quantity: 1, unit: '' });
     });
 
     it('very long item name', () => {
@@ -285,7 +285,7 @@ describe('AC-7: Voice Subsystem — NLP Parser', () => {
       // titleCase preserves the original casing — 's stays lowercase
       expect(result.name).toBe("Ben & Jerry's Ice Cream");
       expect(result.quantity).toBe(1);
-      expect(result.unit).toBe('each');
+      expect(result.unit).toBe('');
     });
 
     it('item name with commas', () => {
@@ -293,7 +293,7 @@ describe('AC-7: Voice Subsystem — NLP Parser', () => {
       assertItem(result, {
         name: 'Organic, Free-Range Eggs',
         quantity: 2,
-        unit: 'each',
+        unit: '',
       });
     });
 
@@ -312,7 +312,7 @@ describe('AC-7: Voice Subsystem — NLP Parser', () => {
       // Falls through to fallback: name="X2", qty=1
       expect(result.name).toBe('X2');
       expect(result.quantity).toBe(1);
-      expect(result.unit).toBe('each');
+      expect(result.unit).toBe('');
     });
   });
 

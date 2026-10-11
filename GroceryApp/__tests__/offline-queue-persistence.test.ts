@@ -48,7 +48,13 @@ class RecordingWebSocket extends NoopWebSocket {
     setTimeout(() => this.onopen?.({}), 0);
   }
   send(data: string): void {
-    RecordingWebSocket.sent.push(JSON.parse(data));
+    const msg = JSON.parse(data);
+    RecordingWebSocket.sent.push(msg);
+    // The relay acks a stored update, echoing its msgId; only then may the
+    // client delete its queued copy.
+    if (msg.type === 'update' && msg.msgId) {
+      setTimeout(() => this.onmessage?.({ data: JSON.stringify({ type: 'ack', message: 'Update relayed', msgId: msg.msgId }) }), 0);
+    }
   }
 }
 

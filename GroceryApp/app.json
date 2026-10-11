@@ -7,7 +7,10 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "scheme": "groceryapp",
+    "scheme": [
+      "groceryapp",
+      "pantryrun"
+    ],
     "plugins": [
       "@sentry/react-native/expo",
       [
@@ -16,6 +19,7 @@
       ],
       "./plugins/withLibcxxPickFirst.js",
       "./plugins/withNetworkSecurityConfig.js",
+      "./plugins/withAndroidBackupRules.js",
       [
         "expo-notifications",
         {
@@ -29,10 +33,12 @@
       "buildNumber": "31",
       "supportsTablet": true,
       "associatedDomains": [
-        "applinks:groceryapp.app"
+        "applinks:pantryrun.app",
+        "applinks:www.pantryrun.app"
       ],
       "infoPlist": {
         "NSCameraUsageDescription": "Scan barcodes to add items to your grocery list, scan QR codes to join your family, and photograph store flyers for price extraction",
+        "NSMicrophoneUsageDescription": "PantryRun never records audio. iOS asks for this because the camera component used for barcode, QR and flyer scanning can also record video with sound; PantryRun does not use that.",
         "NSPhotoLibraryUsageDescription": "Select a store flyer photo from your library so PantryRun can read its prices",
         "NSLocalNetworkUsageDescription": "PantryRun connects to your self-hosted sync relay on your local network to keep your family's grocery lists in sync",
         "NSAppTransportSecurity": {
@@ -70,7 +76,24 @@
             ]
           }
         ],
-        "NSPrivacyCollectedDataTypes": []
+        "NSPrivacyCollectedDataTypes": [
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypePhotosorVideos",
+            "NSPrivacyCollectedDataTypeLinked": false,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          },
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeDeviceID",
+            "NSPrivacyCollectedDataTypeLinked": false,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          }
+        ]
       }
     },
     "android": {
@@ -80,8 +103,11 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
+      "allowBackup": false,
       "predictiveBackGestureEnabled": false,
-      "permissions": ["POST_NOTIFICATIONS"],
+      "permissions": [
+        "POST_NOTIFICATIONS"
+      ],
       "intentFilters": [
         {
           "action": "VIEW",
@@ -89,7 +115,12 @@
           "data": [
             {
               "scheme": "https",
-              "host": "groceryapp.app",
+              "host": "pantryrun.app",
+              "pathPrefix": "/invite"
+            },
+            {
+              "scheme": "https",
+              "host": "www.pantryrun.app",
               "pathPrefix": "/invite"
             }
           ],
@@ -104,6 +135,10 @@
             {
               "scheme": "groceryapp",
               "host": "invite"
+            },
+            {
+              "scheme": "pantryrun",
+              "host": "invite"
             }
           ],
           "category": [
@@ -115,7 +150,9 @@
       "package": "com.shiftlogichq.pantryrun",
       "versionCode": 31,
       "packagingOptions": {
-        "pickFirst": ["**/libc++_shared.so"]
+        "pickFirst": [
+          "**/libc++_shared.so"
+        ]
       }
     },
     "web": {

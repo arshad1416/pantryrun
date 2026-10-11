@@ -4,7 +4,8 @@
  * Enhanced relay server with:
  *  - Device enrollment endpoint (POST /enroll)
  *  - Family invite signature verification
- *  - Rate limiting per device token (max 100 messages/min)
+ *  - Rate limiting per device token (100 control messages/min, a separate
+ *    larger budget for Yjs updates)
  *  - WebSocket authentication via relayToken
  *  - Configurable ports via environment variables
  *
@@ -171,6 +172,15 @@ const MAX_CLIENTS_PER_FAMILY = parseInt(process.env.MAX_CLIENTS_PER_FAMILY || '5
 const MAX_FAMILIES = parseInt(process.env.MAX_FAMILIES || '100', 10);
 const MAX_DEVICES_PER_FAMILY = parseInt(process.env.MAX_DEVICES_PER_FAMILY || '20', 10);
 const RATE_LIMIT_MESSAGES = parseInt(process.env.RATE_LIMIT_MESSAGES || '100', 10);
+/**
+ * Separate per-device budget for `update` frames. Updates are the payload the
+ * relay exists to carry, and they arrive in legitimate bursts: a reconnecting
+ * device drains its offline queue, answers peers' sync requests and publishes
+ * a snapshot per list. Sharing the 100/min control budget with them dropped
+ * everything past the 100th frame of a replay — silently, since the dropped
+ * entries had already been deleted from the sender's disk.
+ */
+const RATE_LIMIT_UPDATES = parseInt(process.env.RATE_LIMIT_UPDATES || '1200', 10);
 const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
 const TOKEN_TTL_MS = parseInt(process.env.TOKEN_TTL_MS || '2592000000', 10); // 30 days default
 
@@ -417,8 +427,9 @@ const { PoolStore } = require('./pool/store');
 const { handlePoolRequest, setUsedTokensStore } = require('./pool/pool-server');
 const { seedTestData } = require('./seed-pool');
 const poolStore = new PoolStore();
-// Seed test data on startup
-seedTestData(poolStore);
+// Fake pool prices are development/test data, served unauthenticated by
+// GET /api/pool/prices — seed them only when explicitly asked to.
+if (process.env.POOL_SEED_TEST_DATA === '1') seedTestData(poolStore);
 // Wire the used-tokens store into the pool server
 setUsedTokensStore(usedTokensStore);
 
@@ -524,15 +535,33 @@ function deserializeState(saved) {
 let _saveTimeout = null;
 
 /**
+ * Write the state file atomically: temp file, fsync, rename. A crash or full
+ * disk mid-write used to leave a truncated relay-state.json, which the next
+ * boot failed to parse and replaced with empty state — logging every device
+ * out of every family at once.
+ */
+function writeStateFile() {
+  const tmp = `${STATE_FILE}.tmp-${process.pid}`;
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeSync(fd, JSON.stringify(serializeState(), null, 2));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, STATE_FILE);
+}
+
+/**
  * Debounced save of relay state to disk.
  * Writes at most once per 500ms to avoid hammering the filesystem.
  */
 function persistState() {
   if (_saveTimeout) clearTimeout(_saveTimeout);
   _saveTimeout = setTimeout(() => {
+    _saveTimeout = null;
     try {
-      const data = serializeState();
-      fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2), 'utf-8');
+      writeStateFile();
     } catch (err) {
       console.warn(`[persist] Failed to save state: ${err.message}`);
     }
@@ -551,7 +580,15 @@ function loadStateFromDisk() {
       console.log(`[persist] Loaded state: ${enrolledDevices.size} enrollments, ${usedInviteSignatures.size} used invites`);
     }
   } catch (err) {
-    console.warn(`[persist] Failed to load state: ${err.message}. Starting fresh.`);
+    // Starting fresh means the next persistState() overwrites this file, so
+    // keep the unreadable original for the operator first.
+    let keptAt = `${STATE_FILE}.corrupt-${Date.now()}`;
+    try {
+      fs.copyFileSync(STATE_FILE, keptAt);
+    } catch (copyErr) {
+      keptAt = `(could not copy aside: ${copyErr.message})`;
+    }
+    console.error(`[persist] Failed to load state: ${err.message}. Original kept at ${keptAt}. Starting fresh.`);
   }
 }
 
@@ -610,14 +647,26 @@ const usedInviteSignatures = new Map();
  * key as the founding member; every later enrollment for that familyId
  * requires the invite's signer to be a key already recorded for it.
  *
- * KNOWN CEILING (documented in GOAL_PROMPT_NOTES.md): /enroll only receives
- * the joiner's X25519 box public key (deviceToken), never the joiner's
- * Ed25519 signing key, and the relay cannot derive one from the other. So the
- * registry can only ever hold founding signers — until the client also sends
- * its signing key at enrollment, only the founding device can issue invites
- * this relay will accept.
+ * Joiners are registered too: /enroll accepts the joiner's own Ed25519
+ * signing key (`signingKey`) with a proof of possession (`signingProof`, a
+ * signature over enrollmentProofMessage). The relay cannot derive it from the
+ * X25519 deviceToken, so without this only the founding device could ever
+ * issue an invite this relay accepted. The key is recorded only after the
+ * enrollment itself passed every invite check, so it adds no way in that a
+ * valid invite did not already grant.
  */
 const familyFounderKeys = new Map();
+
+/**
+ * What a joiner signs with its own Ed25519 key at /enroll to prove it holds
+ * the key it asks to register. Bound to the invite's family and nonce (single
+ * use) and to the enrolling deviceToken, so a proof cannot be replayed into
+ * another enrollment. Must match the client's enrollmentProofMessage
+ * (src/identity/family.ts).
+ */
+function enrollmentProofMessage(familyId, nonce, deviceToken) {
+  return `pantryrun-enroll-v1:${familyId}:${nonce}:${deviceToken}`;
+}
 
 // ─── Ed25519 Signature Verification ──────────────────────────────────────────
 
@@ -1009,7 +1058,7 @@ const server = createServer((req, res) => {
 
       try {
         const data = JSON.parse(body);
-        const { deviceToken, familyInviteToken } = data;
+        const { deviceToken, familyInviteToken, signingKey, signingProof } = data;
 
         if (!deviceToken || !familyInviteToken) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1090,6 +1139,18 @@ const server = createServer((req, res) => {
           return;
         }
 
+        // Optional: the joiner's own signing key, so it can invite others later.
+        // Sent with a proof of possession; a key without a valid proof is
+        // refused rather than silently ignored, so a broken client notices.
+        if (signingKey !== undefined || signingProof !== undefined) {
+          if (typeof signingKey !== 'string' || typeof signingProof !== 'string' ||
+              !verifyEd25519Signature(enrollmentProofMessage(familyId, nonce, deviceToken), signingProof, signingKey)) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid signing key proof' }));
+            return;
+          }
+        }
+
         // Replay protection: keyed on the signed per-invite nonce (scoped to
         // the familyId), NOT the raw familyInviteToken string — re-serializing
         // the same JSON (reordered keys, whitespace) must not mint a fresh
@@ -1124,9 +1185,13 @@ const server = createServer((req, res) => {
         // invite's own expiry passes; the hourly sweep evicts it after that.
         usedInviteSignatures.set(inviteReplayKey, expiresAt);
 
-        // Record the founding signer for a previously-unseen familyId.
+        // Record the founding signer for a previously-unseen familyId, and
+        // register the joiner's proven signing key as a member who may invite.
         if (!familyFounderKeys.has(familyId)) {
           familyFounderKeys.set(familyId, new Set([inviterDeviceId]));
+        }
+        if (signingKey) {
+          familyFounderKeys.get(familyId).add(signingKey);
         }
 
         // Generate a relay token (opaque routing token)
@@ -1204,6 +1269,7 @@ const server = createServer((req, res) => {
         maxDevicesPerFamily: MAX_DEVICES_PER_FAMILY,
         maxClientsPerFamily: MAX_CLIENTS_PER_FAMILY,
         rateLimitMessagesPerMin: RATE_LIMIT_MESSAGES,
+        rateLimitUpdatesPerMin: RATE_LIMIT_UPDATES,
         tokenTtlDays: Math.round(TOKEN_TTL_MS / 86400000),
       },
     }));
@@ -1593,7 +1659,7 @@ const server = createServer((req, res) => {
         }
 
         const { addUpdate } = require('./encrypted-store');
-        addUpdate(familyId, listId, payload);
+        const stored = addUpdate(familyId, listId, payload);
 
         // Broadcast to online family room clients
         const room = familyRooms.get(familyId);
@@ -1607,6 +1673,7 @@ const server = createServer((req, res) => {
                 deviceId: 'assistant-cloud',
                 listId,
                 payload,
+                seq: stored.seq,
               });
               relayed++;
             }
@@ -1873,7 +1940,9 @@ function handleMessage(sender, message) {
               familyId,
               deviceId: 'stored-history',
               listId: lId,
-              payload: update
+              payload: { ciphertext: update.ciphertext, iv: update.iv, tag: update.tag },
+              seq: update.seq,
+              snapshot: update.snapshot === true,
             });
             sentHistoryCount++;
           }
@@ -1884,6 +1953,10 @@ function handleMessage(sender, message) {
       } catch (err) {
         console.warn(`[identity] Failed to load update history: ${err.message}`);
       }
+      // Marks the end of the replay. Everything up to here is now applied on
+      // the client, which is the moment it can safely publish a snapshot that
+      // covers it (see addUpdate in encrypted-store.js).
+      sendTo(sender, { type: 'history_complete', familyId });
 
       break;
     }
@@ -1921,20 +1994,29 @@ function handleMessage(sender, message) {
     }
 
     case 'update': {
+      // Clients that need to know whether an update was stored (the offline
+      // queue only deletes its copy on success) tag it with a msgId, echoed
+      // on the ack or error that answers it. Bounded so it cannot be used to
+      // reflect arbitrary payloads back.
+      const msgId = typeof message.msgId === 'string' && message.msgId.length <= 64 ? message.msgId : undefined;
+
       // Check authentication
       if (!sender._relayToken) {
         sendTo(sender, {
           type: 'error',
           message: 'Not authenticated. Send auth message first.',
+          msgId,
         });
         return;
       }
 
-      // Check rate limit
-      if (!checkRateLimit(sender._relayToken)) {
+      // Check rate limit (own budget — see RATE_LIMIT_UPDATES)
+      if (!checkRateLimit(`update:${sender._relayToken}`, RATE_LIMIT_UPDATES)) {
         sendTo(sender, {
           type: 'error',
-          message: 'Rate limit exceeded (max 100 messages/min)',
+          message: `Rate limit exceeded (max ${RATE_LIMIT_UPDATES} updates/min)`,
+          msgId,
+          retryAfterMs: RATE_LIMIT_WINDOW_MS,
         });
         return;
       }
@@ -1945,6 +2027,7 @@ function handleMessage(sender, message) {
         sendTo(sender, {
           type: 'error',
           message: 'update message requires familyId, listId, and payload',
+          msgId,
         });
         return;
       }
@@ -1955,8 +2038,27 @@ function handleMessage(sender, message) {
         sendTo(sender, {
           type: 'error',
           message: 'Not authenticated for this family room',
+          msgId,
         });
         return;
+      }
+
+      // A snapshot is the sender's full state for the list; it replaces the
+      // stored entries the sender says it has applied (seq <= coversSeq). The
+      // relay cannot verify that, and does not need to: only authenticated
+      // family devices write here.
+      const snapshot = message.snapshot === true;
+      const coversSeq = snapshot && Number.isFinite(message.coversSeq) ? message.coversSeq : 0;
+
+      // Save update to encrypted-store (100% zero-knowledge persistence).
+      // Stored before it is relayed and acknowledged: an ack is the sender's
+      // licence to forget the update, so it must only follow a durable write.
+      let stored = null;
+      try {
+        const { addUpdate } = require('./encrypted-store');
+        stored = addUpdate(familyId, listId, payload, { snapshot, coversSeq });
+      } catch (err) {
+        console.warn(`[ws-update] Failed to save update: ${err.message}`);
       }
 
       // Relay to all OTHER clients in the same family room
@@ -1971,25 +2073,29 @@ function handleMessage(sender, message) {
               deviceId,
               listId,
               payload,
+              seq: stored ? stored.seq : undefined,
             });
             relayed++;
           }
         });
-        console.log(`[relay] Device "${deviceId.slice(0, 12)}..." → family "${familyId}" list "${listId}" → ${relayed} peers`);
+        console.log(`[relay] Device "${String(deviceId).slice(0, 12)}..." → family "${familyId}" list "${listId}" → ${relayed} peers`);
       }
 
-      // Save update to encrypted-store (100% zero-knowledge persistence)
-      try {
-        const { addUpdate } = require('./encrypted-store');
-        addUpdate(familyId, listId, payload);
-      } catch (err) {
-        console.warn(`[ws-update] Failed to save update: ${err.message}`);
+      if (stored) {
+        sendTo(sender, {
+          type: 'ack',
+          message: 'Update relayed',
+          msgId,
+          seq: stored.seq,
+        });
+      } else {
+        sendTo(sender, {
+          type: 'error',
+          message: 'Relay could not store this update; it will be retried',
+          msgId,
+          retryAfterMs: 30_000,
+        });
       }
-
-      sendTo(sender, {
-        type: 'ack',
-        message: 'Update relayed',
-      });
       break;
     }
 
@@ -2154,7 +2260,7 @@ server.listen(RELAY_PORT, () => {
   Stats:     ${httpProtocol}://localhost:${RELAY_PORT}/stats
   Enroll:    POST ${httpProtocol}://localhost:${RELAY_PORT}/enroll  { deviceToken, familyInviteToken }
 
-  Rate limit:       ${RATE_LIMIT_MESSAGES} messages/min per device
+  Rate limit:       ${RATE_LIMIT_MESSAGES} messages/min, ${RATE_LIMIT_UPDATES} updates/min per device
   Max families:     ${MAX_FAMILIES}
   Max devices/family: ${MAX_DEVICES_PER_FAMILY}
   Max clients/family: ${MAX_CLIENTS_PER_FAMILY}
@@ -2201,6 +2307,7 @@ server.listen(RELAY_PORT, () => {
       }
       // Retention: age out stored encrypted updates (ciphertext-only, but
       // don't keep them forever). Default 30 days, override via UPDATE_TTL_MS.
+      // A list's latest snapshot is never aged out — see encrypted-store.js.
       try {
         const { cleanupExpiredUpdates } = require('./encrypted-store');
         const updateTtlMs = parseInt(process.env.UPDATE_TTL_MS || '2592000000', 10);
@@ -2224,7 +2331,7 @@ function gracefulShutdown() {
     clearTimeout(_saveTimeout);
     _saveTimeout = null;
     try {
-      fs.writeFileSync(STATE_FILE, JSON.stringify(serializeState(), null, 2), 'utf-8');
+      writeStateFile();
     } catch (err) {
       console.warn(`[shutdown] Failed to save state: ${err.message}`);
     }

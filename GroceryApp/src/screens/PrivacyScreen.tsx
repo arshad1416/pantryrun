@@ -183,13 +183,13 @@ export default function PrivacyScreen({ navigation }: Props) {
         <InfoRow
           icon="👨‍👩‍👧‍👦"
           label="Family Sync"
-          description="Syncs through your self-hosted relay. List data is end-to-end encrypted — the relay can't read it. The relay briefly stores the encrypted updates (auto-deleted after 30 days) so offline devices can catch up."
+          description="Syncs through the PantryRun relay, or your own if you self-host. List data is end-to-end encrypted — the relay can't read it. The relay briefly stores the encrypted updates (auto-deleted after 30 days) so offline devices can catch up."
           theme={theme}
         />
         <InfoRow
           icon="🗞️"
           label="Flyer Scanning"
-          description="Optional. Flyer photos you take are sent to your relay for AI price extraction (location metadata removed, image discarded after). Unlike list sync, the relay can see flyer photo contents — self-host to keep them in your network."
+          description="Optional. Flyer photos you take are sent to your relay for AI price extraction (location metadata removed, image discarded after). Unlike list sync, the relay can see flyer photo contents — self-host your relay to keep them in your own network."
           theme={theme}
         />
         <InfoRow

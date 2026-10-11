@@ -14,7 +14,7 @@ import type { PriceAdapter } from './adapter';
 import type { PriceResult } from './types';
 import { getSettings } from '../config/settings';
 import {
-  findBestRow,
+  findCandidateRows,
   flyerDealToPriceResult,
   flyerOfferEnded,
   loadFlyerDeals,
@@ -24,12 +24,17 @@ import {
   type Snapshot,
 } from './live-prices';
 
-function userFsa(): string {
+function userFsa(): string | null {
   return normalizeFsa(getSettings().flippFsa);
 }
 
 function priceOf(row: FlyerDealRow): number | null {
   return row.price_real ?? (parseFloat(row.price) || null);
+}
+
+/** Newer flyers first when the same product is listed twice. */
+function timeOf(row: FlyerDealRow): number {
+  return Date.parse(row.valid_from ?? '') || Date.parse(row.valid_to) || 0;
 }
 
 export class FlippDealsAdapter implements PriceAdapter {
@@ -53,20 +58,25 @@ export class FlippDealsAdapter implements PriceAdapter {
   }
 
   async getPrice(itemName: string, storeId: string): Promise<PriceResult | null> {
-    const deals = await this.dealsFor(storeId);
-    if (!deals) return null;
-    const row = findBestRow(itemName, deals.rows, (r) => r.name, priceOf);
-    return row ? flyerDealToPriceResult(row, deals.snap) : null;
+    return (await this.getCandidates([itemName], storeId)).get(itemName)?.[0] ?? null;
   }
 
   async getPrices(items: string[], storeId: string): Promise<Map<string, PriceResult>> {
     const results = new Map<string, PriceResult>();
+    for (const [item, list] of await this.getCandidates(items, storeId)) results.set(item, list[0]);
+    return results;
+  }
+
+  /** Ranked deals per item (see findCandidateRows); the basket picks among them. */
+  async getCandidates(items: string[], storeId: string): Promise<Map<string, PriceResult[]>> {
+    const results = new Map<string, PriceResult[]>();
     const deals = await this.dealsFor(storeId);
     if (!deals) return results;
     for (const itemName of items) {
-      const row = findBestRow(itemName, deals.rows, (r) => r.name, priceOf);
-      const result = row ? flyerDealToPriceResult(row, deals.snap) : null;
-      if (result) results.set(itemName, result);
+      const list = findCandidateRows(itemName, deals.rows, (r) => r.name, priceOf, timeOf)
+        .map((row) => flyerDealToPriceResult(row, deals.snap))
+        .filter((pr): pr is PriceResult => pr !== null);
+      if (list.length > 0) results.set(itemName, list);
     }
     return results;
   }

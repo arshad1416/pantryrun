@@ -295,7 +295,7 @@ describe('purchasePlus passes the resolved token to the store', () => {
 
     // Let the lazy imports and the product fetch settle, then complete the flow.
     await new Promise((r) => setTimeout(r, 0));
-    onPurchase?.({ productId: 'pantryrun_plus_annual', purchaseToken: 'tok', transactionId: 't1' });
+    onPurchase?.({ productId: 'pantryrun_plus_annual', purchaseToken: 'tok', transactionId: 't1', purchaseState: 'purchased' });
     // The purchase must actually succeed, not merely not-throw.
     await expect(pending).resolves.toBe(true);
 
@@ -319,7 +319,9 @@ describe('purchasePlus passes the resolved token to the store', () => {
 
 });
 
-/** Builds a purchasePlus harness whose store events the test drives by hand. */
+/** Builds a purchasePlus harness whose store events the test drives by hand.
+ *  Emitted Plus purchases carry purchaseState: v15 always sets it, and only
+ *  'purchased' may grant (see iap-purchase-lifecycle.test.ts). */
 async function harness() {
   jest.resetModules();
   const finishTransaction = jest.fn(async () => undefined);
@@ -373,7 +375,7 @@ describe('buffered store events must not settle the wrong purchase', () => {
     h.fail({ productId: 'some_other_sku', code: 'E_UNKNOWN', message: 'stale' });
     await h.settle();
 
-    h.emit({ productId: 'pantryrun_plus_annual', purchaseToken: 'tok', transactionId: 't1' });
+    h.emit({ productId: 'pantryrun_plus_annual', purchaseToken: 'tok', transactionId: 't1', purchaseState: 'purchased' });
     await expect(h.pending).resolves.toBe(true);
     expect(h.finishTransaction).toHaveBeenCalledTimes(1);
   });
@@ -390,7 +392,7 @@ describe('buffered store events must not settle the wrong purchase', () => {
 
   it('matches on the ids array too, not just productId', async () => {
     const h = await harness();
-    h.emit({ ids: ['pantryrun_plus_annual'], purchaseToken: 'tok', transactionId: 't2' });
+    h.emit({ ids: ['pantryrun_plus_annual'], purchaseToken: 'tok', transactionId: 't2', purchaseState: 'purchased' });
     await expect(h.pending).resolves.toBe(true);
     expect(h.finishTransaction).toHaveBeenCalledTimes(1);
   });
@@ -407,7 +409,7 @@ describe('buffered store events must not settle the wrong purchase', () => {
     await h.settle();
     expect(h.finishTransaction).not.toHaveBeenCalled();
 
-    h.emit({ productId: 'pantryrun_plus_annual', purchaseToken: 'tok', transactionId: 't3' });
+    h.emit({ productId: 'pantryrun_plus_annual', purchaseToken: 'tok', transactionId: 't3', purchaseState: 'purchased' });
     await expect(h.pending).resolves.toBe(true);
     expect(h.finishTransaction).toHaveBeenCalledTimes(1);
   });
@@ -418,7 +420,7 @@ describe('buffered store events must not settle the wrong purchase', () => {
     h.fail({ productIds: ['some_other_sku'], code: 'E_UNKNOWN', message: 'stale' });
     await h.settle();
 
-    h.emit({ productId: 'pantryrun_plus_annual', purchaseToken: 'tok', transactionId: 't4' });
+    h.emit({ productId: 'pantryrun_plus_annual', purchaseToken: 'tok', transactionId: 't4', purchaseState: 'purchased' });
     await expect(h.pending).resolves.toBe(true);
   });
 });
@@ -465,7 +467,7 @@ describe('purchasePlus passes the resolved token to the store (cont.)', () => {
     expect(finishTransaction).not.toHaveBeenCalled();
 
     // Still waiting — the real event resolves it.
-    onPurchase?.({ productId: 'pantryrun_plus_annual', purchaseToken: 'tok', transactionId: 't1' });
+    onPurchase?.({ productId: 'pantryrun_plus_annual', purchaseToken: 'tok', transactionId: 't1', purchaseState: 'purchased' });
     await expect(pending).resolves.toBe(true);
     expect(finishTransaction).toHaveBeenCalledTimes(1);
   });

@@ -56,6 +56,15 @@ export interface WebSocketConfig {
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
+/**
+ * What the user sees when the relay no longer accepts this device's token.
+ * Retrying cannot fix it — the token expired (30 days unused) or the relay
+ * forgot the enrollment — so the client stops and says how to recover.
+ */
+export const RELAY_AUTH_REJECTED_MESSAGE =
+  "This device is no longer paired with your family's sync server. Ask a family member " +
+  'for a new invite and pair again (Settings → Pair a device). Your lists are still saved on this device.';
+
 export interface OfflineEntry {
   update: Uint8Array;
   listId: string;
@@ -70,11 +79,20 @@ export interface OfflineEntry {
    * persistEntry checks this flag and deletes the row when the write lands.
    */
   dropped?: boolean;
+  /**
+   * msgId of the relay frame currently carrying this entry. The entry stays in
+   * the queue (and on disk) until the relay acks that msgId; a close, an error
+   * reply or an ack timeout clears it so the next flush sends it again.
+   */
+  inFlight?: string | null;
 }
 
 // ─── WebSocket Sync Client ───────────────────────────────────────────────────
 
 export const MAX_QUEUE_SIZE = 1000;
+
+/** How long a flushed batch may wait for its ack before it is resent. */
+export const ACK_TIMEOUT_MS = 30_000;
 
 /**
  * XChaCha20-Poly1305 authentication tag length.
@@ -112,6 +130,8 @@ export class YjsWebSocketClient {
   private ready = false;
   private disposed = false;
   private authPending = true; // true until auth_ack received
+  /** Latched when the relay rejects our relay token; stops reconnecting. */
+  private authRejected = false;
   /** Latched when the relay answers sync_request with "unknown message type". */
   private reconciliationUnsupported = false;
   private storageOperations = new Set<Promise<unknown>>();
@@ -119,6 +139,17 @@ export class YjsWebSocketClient {
   private heldCount = 0;
   private recoveryRequests = new Map<string, string>();
   private _ackTimeout: ReturnType<typeof setTimeout> | null = null;
+  /** Flushed batches awaiting the relay's ack, keyed by msgId. */
+  private inFlightBatches = new Map<string, { entries: OfflineEntry[]; timer: ReturnType<typeof setTimeout> }>();
+  private flushRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private msgCounter = 0;
+  /**
+   * Highest relay seq applied per list. A snapshot claims to cover exactly
+   * these entries, so the relay can drop them (see sendSnapshot).
+   */
+  private seenSeq = new Map<string, number>();
+  /** What the relay's history replay held per list on this connection. */
+  private historyStats = new Map<string, { count: number; snapshots: number }>();
 
   // Callbacks
   onStateChange?: (state: ConnectionState) => void;
@@ -143,6 +174,11 @@ export class YjsWebSocketClient {
   onReconnected?: () => void;
   onRecoveryRequest?: (listId: string, requestId: string, senderDeviceId: string) => void;
   onRecoveryResponse?: (listId: string, update: Uint8Array) => void;
+  /**
+   * The relay finished replaying its stored history. Everything it holds has
+   * now been applied, so this is when snapshots can be published.
+   */
+  onHistoryComplete?: () => void;
 
   constructor(config: WebSocketConfig) {
     this.config = config;
@@ -249,7 +285,7 @@ export class YjsWebSocketClient {
    * Connect (or reconnect) to the relay server.
    */
   connect(): void {
-    if (this.disposed) return;
+    if (this.disposed || this.authRejected) return;
     if (this.ws?.readyState === (typeof WebSocket !== 'undefined' ? WebSocket.OPEN : 1) ||
         this.ws?.readyState === (typeof WebSocket !== 'undefined' ? WebSocket.CONNECTING : 0)) {
       return;
@@ -278,6 +314,7 @@ export class YjsWebSocketClient {
             socket.onclose = null;
             socket.close();
             this.ws = null;
+            this.releaseInFlight();
             this.setState('disconnected');
             this.scheduleReconnect();
           }
@@ -290,6 +327,7 @@ export class YjsWebSocketClient {
       } else if (this.config.allowUnauthenticated) {
         // Test mode: skip auth, send identity directly
         this.authPending = false;
+        this.historyStats.clear();
         this.setState('connected');
         this.sendMessage({
           type: 'identity',
@@ -326,6 +364,8 @@ export class YjsWebSocketClient {
 
     this.ws.onclose = () => {
       if (!current()) return;
+      // Nothing sent on this socket can be acked any more.
+      this.releaseInFlight();
       this.setState('disconnected');
       this.scheduleReconnect();
     };
@@ -350,6 +390,11 @@ export class YjsWebSocketClient {
       this.ws.close();
       this.ws = null;
     }
+    this.releaseInFlight();
+    if (this.flushRetryTimer) {
+      clearTimeout(this.flushRetryTimer);
+      this.flushRetryTimer = null;
+    }
     this.setState('disconnected');
     this.recoveryRequests.clear();
     await Promise.allSettled([this.initializing, ...this.storageOperations]);
@@ -359,6 +404,7 @@ export class YjsWebSocketClient {
 
   private scheduleReconnect(): void {
     if (this.disposed) return; // never reconnect after explicit disconnect
+    if (this.authRejected) return; // the same token will be rejected again
     if (this.reconnectTimer) return; // already scheduled
     const delay = this.reconnectDelay;
     console.log(`YjsWebSocket: reconnecting in ${Math.round(delay)}ms (attempt ${this.reconnectAttempt + 1})`);
@@ -456,42 +502,176 @@ export class YjsWebSocketClient {
   }
 
   /**
-   * Flush all queued updates to the relay server.
+   * Publish a full-state snapshot (Y.encodeStateAsUpdate) for a list.
+   *
+   * The relay prunes stored history after 30 days and could not read a
+   * replacement, so a list nobody had touched for a month never reached a
+   * device that joined later: peers only answer sync requests for lists the
+   * asker already knows. A snapshot is stored like any update but flagged, and
+   * replaces the entries this device has applied (`coversSeq`); the relay
+   * never ages out a list's latest snapshot. Sent once the history replay is
+   * complete, so it covers everything the relay had.
+   *
+   * Best-effort and never queued: an offline device publishes on its next
+   * connect instead. Skipped for a list this device failed to decrypt — a
+   * wrong-key device must not replace the family's history with its own.
+   */
+  sendSnapshot(listId: string, update: Uint8Array): void {
+    if (!this.ready || this.disposed || this.state !== 'connected' || !this.ws) return;
+    if (this.config.canSendList?.(listId) === false || this.reportedDecryptFailures.has(listId)) return;
+    try {
+      this.sendMessage({
+        type: 'update',
+        familyId: this.config.familyId,
+        deviceId: this.config.deviceId,
+        listId,
+        payload: this.encryptUpdate(update, listId),
+        snapshot: true,
+        coversSeq: this.seenSeq.get(listId) ?? 0,
+      });
+    } catch (err) {
+      console.warn('YjsWebSocket: failed to send snapshot', err);
+    }
+  }
+
+  /**
+   * Whether a snapshot would change what the relay holds for this list: not
+   * when this connection's replay was already exactly one snapshot.
+   */
+  needsSnapshot(listId: string): boolean {
+    const stats = this.historyStats.get(listId);
+    return !(stats && stats.count === 1 && stats.snapshots === 1);
+  }
+
+  /** The local doc was replaced or destroyed: it no longer covers what it saw. */
+  forgetList(listId: string): void {
+    this.seenSeq.delete(listId);
+    this.historyStats.delete(listId);
+  }
+
+  /**
+   * Flush queued updates to the relay server.
+   *
+   * Entries are merged per list (Y.mergeUpdates) into one frame each, and stay
+   * queued — in memory and on disk — until the relay acks that frame's msgId.
+   * The previous version sent up to MAX_QUEUE_SIZE frames in one burst and
+   * deleted each from disk straight after ws.send: the relay's per-minute
+   * rate limit dropped everything past its budget, and those edits were gone
+   * from the only device that had them.
    */
   private flushOfflineQueue(): void {
+    if (this.flushRetryTimer) {
+      clearTimeout(this.flushRetryTimer);
+      this.flushRetryTimer = null;
+    }
     if (this.offlineQueue.length === 0) return;
+    if (this.state !== 'connected' || !this.ws) return;
 
-    const queue = [...this.offlineQueue];
-    this.offlineQueue = [];
-    const delivered: Array<string | null | undefined> = [];
+    const byList = new Map<string, OfflineEntry[]>();
+    for (const entry of this.offlineQueue) {
+      if (entry.inFlight || this.config.canSendList?.(entry.listId) === false) continue;
+      const group = byList.get(entry.listId);
+      if (group) group.push(entry);
+      else byList.set(entry.listId, [entry]);
+    }
 
-    for (const entry of queue) {
-      if (this.state === 'connected' && this.ws && this.config.canSendList?.(entry.listId) !== false) {
-        try {
-          const encrypted = this.encryptUpdate(entry.update, entry.listId);
-          this.sendMessage({
-            type: 'update',
-            familyId: this.config.familyId,
-            deviceId: this.config.deviceId,
-            listId: entry.listId,
-            payload: encrypted,
-          });
-          delivered.push(entry.persistedId);
-        } catch {
-          // Re-queue if send fails
-          this.offlineQueue.push(entry);
-        }
-      } else {
-        this.offlineQueue.push(entry);
+    const batches: Array<[string, OfflineEntry[], Uint8Array]> = [];
+    for (const [listId, entries] of byList) {
+      try {
+        batches.push([listId, entries, entries.length === 1 ? entries[0].update : Y.mergeUpdates(entries.map((e) => e.update))]);
+      } catch {
+        // Unmergeable bytes: send them as they were queued rather than not at all.
+        for (const entry of entries) batches.push([listId, [entry], entry.update]);
       }
     }
 
-    if (delivered.some(Boolean)) {
-      this.deletePersisted(delivered);
+    for (const [listId, entries, update] of batches) {
+      try {
+        const msgId = `q${++this.msgCounter}-${Date.now().toString(36)}`;
+        const encrypted = this.encryptUpdate(update, listId);
+        for (const entry of entries) entry.inFlight = msgId;
+        const timer = setTimeout(() => this.releaseBatch(msgId, 0), ACK_TIMEOUT_MS);
+        this.inFlightBatches.set(msgId, { entries, timer });
+        this.sendMessage({
+          type: 'update',
+          familyId: this.config.familyId,
+          deviceId: this.config.deviceId,
+          listId,
+          payload: encrypted,
+          msgId,
+        });
+      } catch (err) {
+        // Left queued (not in flight); the next flush tries again.
+        console.warn('YjsWebSocket: failed to flush queued updates for list', listId, err);
+      }
     }
+  }
 
-    if (this.offlineQueue.length === 0) {
-      this.onQueueDrained?.();
+  /** The relay stored a flushed batch: only now may its entries be forgotten. */
+  private settleBatch(msgId: string): void {
+    const batch = this.inFlightBatches.get(msgId);
+    if (!batch) return;
+    clearTimeout(batch.timer);
+    this.inFlightBatches.delete(msgId);
+    const done = new Set(batch.entries);
+    this.offlineQueue = this.offlineQueue.filter((entry) => !done.has(entry));
+    const ids: string[] = [];
+    for (const entry of batch.entries) {
+      // A disk write still in flight deletes its own row when it lands.
+      entry.dropped = true;
+      if (entry.persistedId) ids.push(entry.persistedId);
+    }
+    if (ids.length) this.deletePersisted(ids);
+    if (this.offlineQueue.length === 0) this.onQueueDrained?.();
+  }
+
+  /** A batch was refused or timed out: keep its entries and retry later. */
+  private releaseBatch(msgId: string, retryAfterMs: number): void {
+    const batch = this.inFlightBatches.get(msgId);
+    if (!batch) return;
+    clearTimeout(batch.timer);
+    this.inFlightBatches.delete(msgId);
+    for (const entry of batch.entries) entry.inFlight = null;
+    if (this.disposed || this.flushRetryTimer) return;
+    this.flushRetryTimer = setTimeout(() => {
+      this.flushRetryTimer = null;
+      this.flushOfflineQueue();
+    }, retryAfterMs);
+  }
+
+  /** Stop for good: the relay will not accept this token again. */
+  private rejectAuth(): void {
+    this.authRejected = true;
+    if (this._ackTimeout) {
+      clearTimeout(this._ackTimeout);
+      this._ackTimeout = null;
+    }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    const socket = this.ws;
+    this.ws = null;
+    if (socket) {
+      socket.onclose = null;
+      socket.close();
+    }
+    this.releaseInFlight();
+    this.setState('error');
+    this.onError?.(new Error(RELAY_AUTH_REJECTED_MESSAGE));
+  }
+
+  /** True once the relay has rejected this device's token (re-pair needed). */
+  isAuthRejected(): boolean {
+    return this.authRejected;
+  }
+
+  /** The socket is gone: nothing in flight on it will be acked. */
+  private releaseInFlight(): void {
+    for (const [msgId, batch] of this.inFlightBatches) {
+      clearTimeout(batch.timer);
+      for (const entry of batch.entries) entry.inFlight = null;
+      this.inFlightBatches.delete(msgId);
     }
   }
 
@@ -507,6 +687,7 @@ export class YjsWebSocketClient {
           clearTimeout(this._ackTimeout);
           this._ackTimeout = null;
         }
+        this.historyStats.clear();
         this.setState('connected');
         this.sendMessage({
           type: 'identity',
@@ -573,12 +754,26 @@ export class YjsWebSocketClient {
             break;
           }
           this.noteDecryptOk(data.listId);
+          if (typeof data.seq === 'number' && data.seq > (this.seenSeq.get(data.listId) ?? 0)) {
+            this.seenSeq.set(data.listId, data.seq);
+          }
+          if (data.deviceId === 'stored-history') {
+            const stats = this.historyStats.get(data.listId) ?? { count: 0, snapshots: 0 };
+            stats.count++;
+            if (data.snapshot) stats.snapshots++;
+            this.historyStats.set(data.listId, stats);
+          }
           this.onRemoteUpdate?.(data.listId, decrypted);
         }
         break;
       }
+      case 'history_complete': {
+        this.onHistoryComplete?.();
+        break;
+      }
       case 'ack': {
-        // Server acknowledged — nothing to do
+        // Only queue flushes carry a msgId; other acks need no action.
+        if (typeof data.msgId === 'string') this.settleBatch(data.msgId);
         break;
       }
       case 'notification': {
@@ -589,6 +784,19 @@ export class YjsWebSocketClient {
       }
       case 'error': {
         const message = data.message ?? 'Relay server error';
+        if (typeof data.msgId === 'string' && this.inFlightBatches.has(data.msgId)) {
+          // A refused queue flush (rate limit, relay storage) is retried, not
+          // reported: the entries are still queued and still on disk.
+          console.warn(`YjsWebSocket: relay refused queued updates (${message}); retrying`);
+          this.releaseBatch(data.msgId, typeof data.retryAfterMs === 'number' ? data.retryAfterMs : 30_000);
+          break;
+        }
+        if (/^(Relay token has expired|Invalid relay token)/.test(message)) {
+          // Used to fall through to the 10s auth timeout and reconnect with
+          // the same dead token forever, showing nothing but a red dot.
+          this.rejectAuth();
+          break;
+        }
         // A relay that predates reconciliation answers sync_request from its
         // `default:` branch. That is a version skew, not a user-facing fault:
         // surfacing it would put a red sync error on screen after every
@@ -828,11 +1036,19 @@ export class YjsWebSocketClient {
 // ─── Relay Message Types ─────────────────────────────────────────────────────
 
 interface RelayMessage {
-  type: 'auth' | 'auth_ack' | 'identity' | 'update' | 'ack' | 'error' | 'notification' | 'sync_request' | 'recovery_request' | 'recovery_response';
+  type: 'auth' | 'auth_ack' | 'identity' | 'update' | 'ack' | 'error' | 'notification' | 'sync_request' | 'recovery_request' | 'recovery_response' | 'history_complete';
   familyId?: string;
   deviceId?: string;
   listId?: string;
   payload?: EncryptedData;
   message?: string;
   relayToken?: string;
+  /** Correlates a queued update with the relay's ack/error for it. */
+  msgId?: string;
+  retryAfterMs?: number;
+  /** Relay storage sequence number of an update (per list). */
+  seq?: number;
+  /** On send: this update is a full-state snapshot covering `coversSeq`. */
+  snapshot?: boolean;
+  coversSeq?: number;
 }

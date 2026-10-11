@@ -129,12 +129,20 @@ describe('handlePricesRequest', () => {
       query: jest.fn(async (sql) => (sql.includes('flipp_deals') ? DEAL_ROWS : SHELF_ROWS)),
       TursoError: Error,
     }));
+    // Region resolution has its own suite below; here the requested FSA is the source.
+    jest.doMock('./region', () => ({
+      resolveSourceFsa: async (kind, fsa) => fsa,
+      _resetRegionState: () => {},
+    }));
     reader = require('./turso-reader');
     server = require('./prices-server');
     server._resetPricesState();
     enrolled = new Map([[TOKEN, { expiresAt: Date.now() + 60_000 }]]);
   });
-  afterEach(() => jest.dontMock('./turso-reader'));
+  afterEach(() => {
+    jest.dontMock('./turso-reader');
+    jest.dontMock('./region');
+  });
 
   async function call(url, opts) {
     const res = mockRes();
@@ -343,8 +351,14 @@ describe('relay /api/prices end to end (fake Turso)', () => {
     expect(shelf.status).toBe(200);
     expect((await shelf.json()).rows[0].store_name).toBe('No Frills');
 
-    expect(tursoCalls).toHaveLength(2);
+    // Region coverage lookups carry no user input; the data queries carry only the region.
+    const dataCalls = tursoCalls.filter((c) => !c.body.requests[0].stmt.sql.includes('coverage_fsa'));
+    expect(dataCalls).toHaveLength(2);
     for (const c of tursoCalls) {
+      expect(c.url).toBe('/v2/pipeline');
+      expect(c.auth).toBe(`Bearer ${READ_TOKEN}`);
+    }
+    for (const c of dataCalls) {
       expect(c.url).toBe('/v2/pipeline');
       expect(c.auth).toBe(`Bearer ${READ_TOKEN}`);
       expect(c.body.requests[0].stmt.args).toEqual([{ type: 'text', value: 'L0R%' }]);
@@ -360,5 +374,176 @@ describe('relay /api/prices end to end (fake Turso)', () => {
 
   test('the read token never appears in relay output', () => {
     expect(output).not.toContain(READ_TOKEN);
+  });
+});
+
+// ─── 4. The SQL itself, against a real SQLite ───────────────────────────────
+
+let sqlite = null;
+try {
+  // Node ≥ 22.5. Older runtimes skip these (the handler tests above still run).
+  sqlite = require('node:sqlite');
+} catch {
+  sqlite = null;
+}
+
+(sqlite ? describe : describe.skip)('price queries (SQLite)', () => {
+  const { sqlFor, MAX_ROWS } = jest.requireActual('./prices-server');
+  let db;
+
+  beforeEach(() => {
+    db = new sqlite.DatabaseSync(':memory:');
+    db.exec(`CREATE TABLE store_prices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, store_id TEXT NOT NULL, store_name TEXT NOT NULL,
+      name TEXT NOT NULL, name_clean TEXT NOT NULL, price TEXT NOT NULL, price_real REAL,
+      unit_price TEXT, unit_price_real REAL, unit TEXT, image_url TEXT, brand TEXT, category TEXT,
+      is_on_sale INTEGER DEFAULT 0, sale_price REAL, was_price REAL, postal_code TEXT NOT NULL,
+      scraped_at TEXT NOT NULL DEFAULT (datetime('now')), source TEXT NOT NULL DEFAULT 'scraper',
+      UNIQUE(store_id, name_clean, postal_code))`);
+    db.exec(`CREATE TABLE flipp_deals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, flyer_id INTEGER, merchant TEXT, postal_code TEXT,
+      name TEXT, price TEXT, price_real REAL, brand TEXT, image_url TEXT, valid_from TEXT, valid_to TEXT)`);
+  });
+
+  function addShelf(store, name, price, daysAgo, postal = 'L0R2H4') {
+    db.prepare(`INSERT INTO store_prices (store_id, store_name, name, name_clean, price, price_real, postal_code, scraped_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', ?))`)
+      .run(store, store, name, name.toLowerCase(), String(price), price, postal, `-${daysAgo} days`);
+  }
+
+  function addDeal(merchant, name, price, postal = 'L0R2H4') {
+    db.prepare(`INSERT INTO flipp_deals (merchant, postal_code, name, price, price_real, valid_from, valid_to)
+                VALUES (?, ?, ?, ?, ?, date('now'), date('now', '+5 days'))`).run(merchant, postal, name, String(price), price);
+  }
+
+  test('shelf: newest scrape per product across postal codes; older cheaper rows dropped', () => {
+    addShelf('nofrills', 'Milk 4 L', 4.49, 5, 'L0R1A1'); // older, cheaper, another postal code
+    addShelf('nofrills', 'Milk 4 L', 5.99, 1, 'L0R2H4');
+    addShelf('nofrills', 'Bread', 2.99, 2);
+    const rows = db.prepare(sqlFor('shelf', MAX_ROWS + 1)).all('L0R%');
+    expect(rows.map((r) => [r.name, r.price_real])).toEqual(expect.arrayContaining([['Milk 4 L', 5.99], ['Bread', 2.99]]));
+    expect(rows).toHaveLength(2);
+  });
+
+  test('shelf: the cap trims every store evenly, not alphabetically-late stores', () => {
+    for (let i = 0; i < 5; i++) {
+      addShelf('loblaws', `Item ${i}`, 1 + i, 1);
+      addShelf('superstore', `Item ${i}`, 1 + i, 1);
+    }
+    const rows = db.prepare(sqlFor('shelf', 6)).all('L0R%');
+    const perStore = rows.reduce((m, r) => ({ ...m, [r.store_id]: (m[r.store_id] || 0) + 1 }), {});
+    expect(perStore).toEqual({ loblaws: 3, superstore: 3 });
+  });
+
+  test('deals: duplicates across postal codes collapse; merchants interleave under the cap', () => {
+    addDeal('Food Basics', 'Grapes', 2.99, 'L0R1A1');
+    addDeal('Food Basics', 'Grapes', 2.99, 'L0R2H4');
+    for (let i = 0; i < 5; i++) {
+      addDeal('Food Basics', `Deal ${i}`, 1 + i);
+      addDeal('Zehrs', `Deal ${i}`, 1 + i);
+    }
+    const all = db.prepare(sqlFor('deals', MAX_ROWS + 1)).all('L0R%');
+    expect(all.filter((r) => r.name === 'Grapes')).toHaveLength(1);
+    const capped = db.prepare(sqlFor('deals', 6)).all('L0R%');
+    expect(capped.filter((r) => r.merchant === 'Zehrs')).toHaveLength(3);
+  });
+});
+
+describe('truncation flag', () => {
+  beforeEach(() => jest.resetModules());
+  afterEach(() => jest.dontMock('./turso-reader'));
+
+  test('a capped answer says truncated and carries exactly MAX_ROWS rows', async () => {
+    const big = (n) => Array.from({ length: n }, (_, i) => ({ ...SHELF_ROWS[0], name: `Item ${i}` }));
+    let rowsToReturn = big(10);
+    jest.doMock('./turso-reader', () => ({ isConfigured: () => true, query: async () => rowsToReturn, TursoError: Error }));
+    const server = require('./prices-server');
+    server._resetPricesState();
+    const enrolled = new Map([['t', { expiresAt: Date.now() + 60_000 }]]);
+    const ask = async () => {
+      server._resetPricesState();
+      const res = mockRes();
+      await server.handlePricesRequest(mockReq('/api/prices/shelf?fsa=L0R', { token: 't' }), res, enrolled);
+      return res.body;
+    };
+
+    expect((await ask()).truncated).toBe(false);
+
+    rowsToReturn = big(server.MAX_ROWS + 1);
+    const cut = await ask();
+    expect(cut.truncated).toBe(true);
+    expect(cut.rows).toHaveLength(server.MAX_ROWS);
+
+    // Exactly MAX_ROWS rows is a complete answer, not a truncated one.
+    rowsToReturn = big(server.MAX_ROWS);
+    expect((await ask()).truncated).toBe(false);
+  });
+});
+
+// ─── 4. region resolution ───────────────────────────────────────────────────
+
+describe('region resolution', () => {
+  const region = require('./region');
+
+  test('a covered FSA answers from itself', () => {
+    expect(region.nearestCovered('M5V', new Set(['M5V', 'L8P']))).toBe('M5V');
+  });
+
+  test('an uncovered Toronto FSA answers from the nearest scraped city FSA', () => {
+    expect(region.nearestCovered('M4C', new Set(['M5V', 'L8P', 'K1P']))).toBe('M5V');
+    expect(region.nearestCovered('L8B', new Set(['M5V', 'L8P', 'K1P']))).toBe('L8P');
+  });
+
+  test('nothing within range means no prices rather than a far-away city', () => {
+    // Thunder Bay is far beyond MAX_DISTANCE_KM of Toronto.
+    expect(region.nearestCovered('P7B', new Set(['M5V']))).toBeNull();
+    expect(region.nearestCovered('Z9Z', new Set(['M5V']))).toBeNull();
+  });
+
+  describe('handler', () => {
+    let server;
+    let query;
+    beforeEach(() => {
+      jest.resetModules();
+      query = jest.fn(async (sql, args) => {
+        if (sql.includes('coverage_fsa')) return [{ coverage_fsa: 'M5V' }, { coverage_fsa: 'K1P' }];
+        return args[0] === 'M5V%' ? SHELF_ROWS : [];
+      });
+      jest.doMock('./turso-reader', () => ({ isConfigured: () => true, query, TursoError: Error }));
+      server = require('./prices-server');
+      server._resetPricesState();
+    });
+    afterEach(() => jest.dontMock('./turso-reader'));
+
+    const enrolled = new Map([['t', { expiresAt: Date.now() + 3_600_000 }]]);
+    async function ask(fsa) {
+      const res = mockRes();
+      await server.handlePricesRequest(mockReq(`/api/prices/shelf?fsa=${fsa}`, { token: 't' }), res, enrolled);
+      return res.body;
+    }
+
+    test('queries the nearest covered FSA and says which it used', async () => {
+      const body = await ask('M4C');
+      expect(body.fsa).toBe('M4C');
+      expect(body.sourceFsa).toBe('M5V');
+      expect(body.rows.length).toBeGreaterThan(0);
+      expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM store_prices'), ['M5V%']);
+    });
+
+    test('neighbours share one cached answer and one coverage read', async () => {
+      await ask('M4C');
+      const second = await ask('M6K');
+      expect(second.fsa).toBe('M6K');
+      expect(second.sourceFsa).toBe('M5V');
+      expect(query.mock.calls.filter(([sql]) => sql.includes('coverage_fsa'))).toHaveLength(1);
+      expect(query.mock.calls.filter(([sql]) => !sql.includes('coverage_fsa'))).toHaveLength(1);
+    });
+
+    test('out of range: empty rows and a null sourceFsa, without a data query', async () => {
+      const body = await ask('V6B');
+      expect(body.sourceFsa).toBeNull();
+      expect(body.rows).toEqual([]);
+      expect(query.mock.calls.filter(([sql]) => !sql.includes('coverage_fsa'))).toHaveLength(0);
+    });
   });
 });

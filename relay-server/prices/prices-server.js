@@ -3,8 +3,8 @@
  *
  * Routes (GET, device-authenticated exactly like /api/extract/flyer):
  *  - /api/prices/deals?fsa=L0R  current flyer deals (flipp_deals)
- *  - /api/prices/shelf?fsa=L0R  shelf prices scraped in the last 7 days
- *                                (store_prices)
+ *  - /api/prices/shelf?fsa=L0R  newest shelf price per product scraped in
+ *                                the last 7 days (store_prices)
  *
  * Privacy: the request names a region (FSA), never an item. The app
  * downloads the region's offers and matches its list on the device.
@@ -16,6 +16,7 @@
  */
 
 const turso = require('./turso-reader');
+const region = require('./region');
 
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const MAX_ROWS = 5000;
@@ -30,26 +31,60 @@ const SHELF_COLUMNS = [
   'is_on_sale', 'sale_price', 'was_price', 'scraped_at',
 ];
 
+/**
+ * SQL per feed. Both queries:
+ *  - de-duplicate first: one shelf row per (store, product) — the newest
+ *    scrape, since the 7-day window holds several and the FSA spans several
+ *    postal codes; flyer rows repeated across the FSA's postal codes collapse
+ *    to one (distinct flyer windows are kept: the app judges which applies);
+ *  - then interleave stores (rank 1 of every store, then rank 2, …), so the
+ *    row cap trims every store evenly instead of dropping whichever stores
+ *    sort last alphabetically.
+ * `limit` is one more than the cap so a cut answer can say `truncated`.
+ */
+function sqlFor(kind, limit) {
+  if (kind === 'deals') {
+    // valid_to is compared on its date part: Flipp writes ISO strings with an
+    // offset, which don't order against SQLite's datetime(). The app judges the
+    // exact window; this only drops offers that ended before yesterday.
+    return `SELECT * FROM (
+              SELECT *, ROW_NUMBER() OVER (
+                       PARTITION BY merchant ORDER BY price_real IS NULL, price_real, name
+                     ) AS store_rank
+              FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                         PARTITION BY merchant, name, price, valid_from, valid_to ORDER BY postal_code
+                       ) AS listing_rank
+                FROM flipp_deals
+                WHERE postal_code LIKE ?
+                  AND substr(valid_to, 1, 10) >= date('now', '-1 day')
+              )
+              WHERE listing_rank = 1
+            )
+            ORDER BY store_rank, merchant
+            LIMIT ${limit}`;
+  }
+  return `SELECT * FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                     PARTITION BY store_id ORDER BY scraped_at DESC, name_clean
+                   ) AS store_rank
+            FROM (
+              SELECT *, ROW_NUMBER() OVER (
+                       PARTITION BY store_id, lower(coalesce(name_clean, name)) ORDER BY scraped_at DESC
+                     ) AS product_rank
+              FROM store_prices
+              WHERE postal_code LIKE ?
+                AND scraped_at > datetime('now', '-7 days')
+            )
+            WHERE product_rank = 1
+          )
+          ORDER BY store_rank, store_id
+          LIMIT ${limit}`;
+}
+
 const QUERIES = {
-  // valid_to is compared on its date part: Flipp writes ISO strings with an
-  // offset, which don't order against SQLite's datetime(). The app judges the
-  // exact window; this only drops offers that ended before yesterday.
-  deals: {
-    sql: `SELECT * FROM flipp_deals
-          WHERE postal_code LIKE ?
-            AND substr(valid_to, 1, 10) >= date('now', '-1 day')
-          ORDER BY merchant, price_real
-          LIMIT ${MAX_ROWS}`,
-    columns: DEAL_COLUMNS,
-  },
-  shelf: {
-    sql: `SELECT * FROM store_prices
-          WHERE postal_code LIKE ?
-            AND scraped_at > datetime('now', '-7 days')
-          ORDER BY store_id, scraped_at DESC
-          LIMIT ${MAX_ROWS}`,
-    columns: SHELF_COLUMNS,
-  },
+  deals: { sql: sqlFor('deals', MAX_ROWS + 1), columns: DEAL_COLUMNS },
+  shelf: { sql: sqlFor('shelf', MAX_ROWS + 1), columns: SHELF_COLUMNS },
 };
 
 const cache = new Map(); // `${kind}:${fsa}` → { at, payload }
@@ -136,35 +171,46 @@ async function handlePricesRequest(req, res, enrolledDevices, now = Date.now()) 
     return true;
   }
 
-  const key = `${kind}:${fsa}`;
+  // Scrapes cover one FSA per city; answer from the nearest covered one.
+  const sourceFsa = await region.resolveSourceFsa(kind, fsa, turso, now);
+  if (!sourceFsa) {
+    send(res, 200, {
+      kind, fsa, sourceFsa: null, fetchedAt: new Date(now).toISOString(), truncated: false, rows: [],
+    }, { 'Cache-Control': 'private, max-age=300' });
+    return true;
+  }
+
+  const key = `${kind}:${sourceFsa}`;
   const hit = cache.get(key);
   if (hit && now - hit.at < CACHE_TTL_MS) {
-    send(res, 200, hit.payload, { 'Cache-Control': 'private, max-age=300' });
+    send(res, 200, { ...hit.payload, fsa }, { 'Cache-Control': 'private, max-age=300' });
     return true;
   }
 
   const { sql, columns } = QUERIES[kind];
   let rows;
   try {
-    rows = await turso.query(sql, [`${fsa}%`]);
+    rows = await turso.query(sql, [`${sourceFsa}%`]);
   } catch (err) {
     // TursoError messages are safe (no URL, no token).
     console.warn(`[prices] ${kind} query failed for ${fsa}: ${err.message}`);
     if (hit) {
       // Serve the last good answer, saying so.
-      send(res, 200, { ...hit.payload, stale: true }, { 'Cache-Control': 'no-store' });
+      send(res, 200, { ...hit.payload, fsa, stale: true }, { 'Cache-Control': 'no-store' });
     } else {
       send(res, 502, { error: 'Price source unavailable' });
     }
     return true;
   }
 
+  const truncated = rows.length > MAX_ROWS;
   const payload = {
     kind,
     fsa,
+    sourceFsa,
     fetchedAt: new Date(now).toISOString(),
-    truncated: rows.length >= MAX_ROWS,
-    rows: rows.map((r) => pick(r, columns)),
+    truncated,
+    rows: rows.slice(0, MAX_ROWS).map((r) => pick(r, columns)),
   };
   cache.set(key, { at: now, payload });
   send(res, 200, payload, { 'Cache-Control': 'private, max-age=300' });
@@ -181,12 +227,14 @@ function cleanPricesState(now = Date.now()) {
 function _resetPricesState() {
   cache.clear();
   rateBuckets.clear();
+  region._resetRegionState();
 }
 
 module.exports = {
   handlePricesRequest,
   cleanPricesState,
   _resetPricesState,
+  sqlFor,
   CACHE_TTL_MS,
   MAX_ROWS,
   RATE_LIMIT_PER_MIN,

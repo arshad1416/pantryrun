@@ -9,8 +9,9 @@
  * grocery vocabulary is small enough that anyone can precompute the digest
  * of every common item name and reverse it. It prevents casual logging of
  * plaintext, nothing more. In v1 every adapter that would receive these
- * digests is dead code (instacart/scraping are stubs; cloud-flyer sends no
- * item names), so nothing hashed here leaves the device.
+ * digests is dead code (instacart/scraping are stubs; cloud-flyer matches
+ * on the device and sends no item names), so nothing hashed here leaves
+ * the device.
  */
 
 // ─── Hashing ────────────────────────────────────────────────────────────────
@@ -41,11 +42,13 @@ export function normalizeForLookup(name: string): string {
 /**
  * Check if an adapter requires hashed item names.
  * Adapters that match on the device can use plaintext; remote adapters
- * should use hashes. flipp-deals and store-prices download a whole region
- * from the relay and match locally — no item name leaves the device.
+ * should use hashes. flipp-deals and store-prices download a whole region,
+ * and cloud-flyer a whole store's pooled list, from the relay and match
+ * locally — no item name leaves the device. (Hashed names could never match
+ * those plaintext lists.)
  */
 export function adapterRequiresHash(adapterId: string): boolean {
-  const localAdapters = new Set(['crowdsourced', 'flyer-scan', 'flipp-deals', 'store-prices']);
+  const localAdapters = new Set(['crowdsourced', 'flyer-scan', 'flipp-deals', 'store-prices', 'cloud-flyer']);
   return !localAdapters.has(adapterId);
 }
 

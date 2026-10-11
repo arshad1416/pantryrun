@@ -35,4 +35,12 @@ export interface PriceAdapter {
    * Default implementation calls getPrice for each item.
    */
   getPrices(items: string[], storeId: string): Promise<Map<string, PriceResult>>;
+
+  /**
+   * Ranked candidate offers per item at a store, best match first. Adapters
+   * that match product names fuzzily return several (e.g. a 4 L jug and a
+   * 1 L carton for "milk") so the basket's eligibility and purchase math
+   * pick among them. Optional: the registry falls back to getPrices.
+   */
+  getCandidates?(items: string[], storeId: string): Promise<Map<string, PriceResult[]>>;
 }

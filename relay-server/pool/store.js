@@ -4,6 +4,12 @@
  * Key format: storeId:normalizedName:flyerWeek
  * Stores prices without contributor info, IP, or fine timestamps.
  *
+ * Store ids carry a colon themselves ("no-frills:M5V" — chain:region, see the
+ * app's contribute.ts), and item names may too, so the key is never split
+ * back apart: each entry keeps its storeId / itemName / flyerWeek as given to
+ * addReport. Keys added without them (legacy seed data) fall back to the
+ * last segment as flyerWeek and the longest storeId prefix.
+ *
  * Methods:
  *  - addReport(key, price) — stores a price report
  *  - getAggregates(storeId) — returns aggregated prices for a store
@@ -16,7 +22,7 @@ const { aggregatePriceReports } = require('./aggregator');
 
 class PoolStore {
   constructor() {
-    /** @type {Map<string, { reports: Array<{ price: number, addedAt: number }>, validTo: number }>} */
+    /** @type {Map<string, { reports: Array<{ price: number, addedAt: number }>, validTo: number, meta: { storeId: string, itemName: string, flyerWeek: string } | null }>} */
     this._store = new Map();
   }
 
@@ -38,12 +44,15 @@ class PoolStore {
    * @param {string} key - storeId:normalizedName:flyerWeek
    * @param {number} price
    * @param {number} validTo - epoch ms when this report expires
+   * @param {{ storeId: string, itemName: string, flyerWeek: string }} [meta] -
+   *   the key's parts, kept so getAggregates never has to split the key
    */
-  addReport(key, price, validTo) {
+  addReport(key, price, validTo, meta) {
     if (!this._store.has(key)) {
-      this._store.set(key, { reports: [], validTo });
+      this._store.set(key, { reports: [], validTo, meta: meta || null });
     }
     const entry = this._store.get(key);
+    if (meta && !entry.meta) entry.meta = meta;
     // Purge reports older than 90 days from this entry before appending
     const expiredThreshold = Date.now() - 90 * 24 * 60 * 60 * 1000; // 90-day window
     entry.reports = entry.reports.filter(r => r.addedAt > expiredThreshold);
@@ -72,11 +81,11 @@ class PoolStore {
     for (const [key, entry] of this._store) {
       if (entry.validTo <= now) continue; // expired
 
-      const parts = key.split(':');
-      if (parts[0] !== storeId) continue;
+      const parts = entry.meta || this._parseLegacyKey(key, storeId);
+      if (!parts || parts.storeId !== storeId) continue;
 
-      const normalizedName = parts[1];
-      const flyerWeek = parts[2];
+      const normalizedName = parts.itemName;
+      const flyerWeek = parts.flyerWeek;
       const agg = aggregatePriceReports(entry.reports.map(r => r.price));
 
       results.push({
@@ -90,6 +99,22 @@ class PoolStore {
     }
 
     return results;
+  }
+
+  /**
+   * Parts of a key stored without metadata, for the store asked about:
+   * `${storeId}:${itemName}:${flyerWeek}` with flyerWeek the last segment.
+   * null when the key isn't that store's.
+   * @param {string} key
+   * @param {string} storeId
+   * @returns {{ storeId: string, itemName: string, flyerWeek: string } | null}
+   */
+  _parseLegacyKey(key, storeId) {
+    const weekAt = key.lastIndexOf(':');
+    if (weekAt < 0 || !key.startsWith(`${storeId}:`)) return null;
+    const itemName = key.slice(storeId.length + 1, weekAt);
+    if (!itemName) return null;
+    return { storeId, itemName, flyerWeek: key.slice(weekAt + 1) };
   }
 
   /**

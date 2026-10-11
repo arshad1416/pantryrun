@@ -64,6 +64,10 @@ describe('Combined invite payload (QR contents)', () => {
     expect(token).toBe('abc{1}');
   });
 
+  it('accepts QR links using the pantryrun:// scheme', () => {
+    expect(parseInviteUrl('pantryrun://invite?token=abc%7B1%7D')).toBe('abc{1}');
+  });
+
   it('inviteTokenToUrl uses the correct scheme and round-trips through parseInviteUrl', () => {
     const combined = JSON.stringify({ pairingCode: { relayUrl: 'ws://h:8080' }, invite: { nonce: 'x' } });
     const url = inviteTokenToUrl(combined);

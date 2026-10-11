@@ -1,27 +1,34 @@
 # PantryRun — Store Compliance Reference
 
-> **Declarations last reviewed:** July 28, 2026, against **v1.30.0**.
-> **Currently shipping:** v1.31.0 / versionCode 31 (`GroceryApp/app.json` →
-> `expo.version` / `expo.android.versionCode`).
+> **Declarations last reviewed:** October 11, 2026, against **v1.31.0** with the
+> PantryRun-hosted relay as the default (`wss://relay.pantryrun.app`).
 > **Package:** `com.shiftlogichq.pantryrun`
->
-> The 1.30.0 → 1.31.0 delta has not been re-reviewed against the forms below;
-> re-check §§0–2 before the next submission.
+> **Privacy policy URL (everywhere):** `https://www.pantryrun.app/privacy`
+> **Support URL:** `https://www.pantryrun.app/support` (page in `site/support/`,
+> deploy it first — it 404s until then)
 
 This document contains all declarations needed for Google Play Console and Apple App Store Connect submissions.
 
-> **v1 declaration basis — read this first.** The v1 binary sends **no user data
-> to developer-controlled servers and no data to any third party that retains
-> it** (see the data-flow truth table in `GOAL_PROMPT_NOTES.md`, Goal 6):
-> Sentry is not configured in any v1 build (no DSN anywhere, `initSentry()`
-> exits before initializing), the Turso-backed features are compiled out with
-> no credential path, and all sync/flyer traffic goes exclusively to the
-> user's **own self-hosted relay** (the managed tier is hidden in v1). The only
-> third-party endpoint is the **opt-in** Open Food Facts barcode lookup, which
-> sends the barcode number alone — no account, device ID, or list data — to
-> service the request. Both stores' forms below are therefore answered as
-> **no data collected**. If any of this changes (Sentry DSN added, managed
-> relay enabled, Turso restored), these forms MUST be re-answered first.
+> **Declaration basis — read this first.** Earlier builds were answered as
+> "no data collected" because every flow went to a relay the *user* ran. That
+> is no longer true: new installs sync through a relay **the developer
+> operates**, so anything that relay can read or keeps is developer
+> collection. What the PantryRun relay receives:
+>
+> | Flow | Readable by the developer? | Retained? |
+> |---|---|---|
+> | Encrypted list updates (Yjs, XChaCha20-Poly1305) | No — ciphertext; keys never leave the family's devices | Up to 30 days (`UPDATE_TTL_MS`) |
+> | Routing metadata: family ID, list ID, device ID (app-generated random IDs), device public key, timestamps, message sizes | Yes | Enrollments: 30 days after last connect; update metadata: with the update |
+> | IP address | Yes (in memory, rate limiting; not written to relay state) | No (Cloudflare edge logs per Cloudflare's policy) |
+> | Flyer photo (user-initiated, EXIF-stripped) | Yes — not E2E encrypted | No — processed and discarded; may pass to Alibaba Cloud Qwen-VL if `QWEN_API_KEY` is set |
+> | Region code (FSA, 3 chars) for deals / shelf prices | Yes | No (response cache is keyed by FSA, not by device) |
+> | Anonymous price contribution (opt-in, blind-token, no IDs) | Yes, unlinkable | Yes (pool) |
+>
+> Still true: no accounts, no analytics/ads SDKs, Sentry has no DSN in any
+> build, no push tokens, Open Food Facts (and USDA only if a build sets
+> `EXPO_PUBLIC_USDA_API_KEY`) receive a barcode number alone, purchases are
+> processed by Apple / Google. **Self-hosters** are unchanged — but the store
+> forms describe the default configuration, which is the hosted relay.
 
 ---
 
@@ -57,53 +64,68 @@ HTTPS/OS-provided crypto, so it does NOT qualify for Apple's "exempt" answer.
 
 Navigate to: **Play Console → PantryRun → App Content → Data Safety**
 
-### Data Collection Overview
-
-**Does your app collect or share any of the required user data types?**
-→ **No**
-
 Google treats data as "collected" when it is transmitted off the device to the
-developer or third parties, with exemptions for on-device processing, for
-transfers the user initiates to a destination the user controls, and for
-ephemeral processing. Every v1 flow falls under those exemptions:
+developer or a third party. Exemptions: on-device processing, and
+transfers to **service providers** processing on your behalf (those are not
+"sharing"). "Processed ephemerally" is a per-type flag, not an exemption.
+Answered conservatively:
 
-| Flow | Destination | Why it is not "collection" |
-|------|-------------|-----------------------------|
-| Grocery lists / sync blobs | User's **own self-hosted relay** | User-installed, user-controlled server; payloads are end-to-end encrypted ciphertext unreadable by anyone but the family's devices; auto-expire after 30 days |
-| Device pairing token (generated public key) | User's own self-hosted relay | Same user-controlled destination; random app-generated key, not a hardware or advertising ID |
-| Flyer photo (optional, EXIF-stripped) | User's own self-hosted relay | User-initiated, user-controlled destination; processed in memory and discarded |
-| Barcode number (opt-in) | Open Food Facts public database | Ephemeral request servicing: the barcode digits alone are sent to fetch a product name; no identifier accompanies the request and nothing is retained by the developer |
-| Crash reports | — | **None sent.** No Sentry DSN is configured in any v1 build; the SDK never initializes |
+### Data collection and security
 
-**Nothing is shared with third parties.** There are no analytics or
-advertising SDKs in the binary (no Firebase, no AdMob, no tracking of any
-kind — pinned by `__tests__/ac15-no-analytics.test.ts`).
+| Question | Answer |
+|---|---|
+| Does your app collect or share any of the required user data types? | **Yes** |
+| Is all of the user data collected by your app encrypted in transit? | **Yes** (TLS to `relay.pantryrun.app`, Open Food Facts, USDA; list content additionally E2E) |
+| Do you provide a way for users to request that their data is deleted? | **Yes** — in-app Settings → Danger Zone → Delete All Data; relay copies expire after 30 days or on request to privacy@pantryrun.app |
+
+### Data types to declare
+
+| Play data type | Collected | Shared | Ephemeral | Required / optional | Purpose | Why |
+|---|---|---|---|---|---|---|
+| **Photos and videos → Photos** | Yes | No ¹ | **Yes** | Optional (user starts a flyer scan) | App functionality | Flyer photo goes to the developer's relay unencrypted for price extraction, then is discarded |
+| **Device or other IDs** | Yes | No | No | Optional (only once you pair / invite) | App functionality | Relay stores app-generated device ID, family ID and device public key for routing, up to 30 days after last connect |
+| **Location → Approximate location** | Yes | No | **Yes** | Optional | App functionality | The 3-character postal prefix (FSA) is sent for regional deal / shelf-price lookups; not stored per device |
+
+¹ If the operator sets `QWEN_API_KEY`, flyer photos are sent to Alibaba Cloud
+(DashScope) as a **service provider** processing on our behalf — that is not
+"sharing" under Play's definition, but it must be named in the privacy policy
+(it is, §7).
+
+**Not declared, with reasons** (re-check if any of these change):
+
+- **List contents (ciphertext sync) — discussion.** The lists reach the relay
+  only as XChaCha20-Poly1305 ciphertext the developer cannot decrypt (keys exist
+  only on the family's devices / recovery phrase). Play's guidance treats
+  end-to-end encrypted data the developer cannot read as not requiring
+  disclosure — **confirm the current wording of Play's Data safety help article
+  at submission time.** If the wording does not clearly cover it, the
+  conservative answer is to declare **App activity → Other user-generated
+  content: collected, not shared, not ephemeral, optional, App functionality**.
+  Declaring it costs little; omitting it wrongly is a policy violation. Our
+  recommendation: **declare it** unless the article explicitly exempts E2E data.
+- **Barcode number → Open Food Facts / USDA:** sent directly from the device to
+  fetch a product name, with no identifier; not a Play user-data type, and the
+  developer receives nothing.
+- **Purchase history:** purchases go through Google Play Billing; the app keeps
+  the entitlement inside the family's encrypted data and sends nothing to the
+  developer.
+- **Price contributions (opt-in):** blind-token, no device/family ID, week-level
+  timestamp — anonymous; not user data under Play's definition. If in doubt,
+  declare **App activity → Other actions** as optional, not linked.
+- **Crash logs:** none sent (no Sentry DSN).
+- **IP address:** not a Play data type; disclosed in the privacy policy.
 
 ### Security Practices
 
 | Practice | Status |
 |----------|--------|
 | Data is encrypted in transit | ✅ Yes |
-| Data is encrypted at rest | ✅ Yes (XChaCha20-Poly1305) |
-| Users can request data deletion | ✅ Yes |
+| Users can request data deletion | ✅ Yes (in-app + privacy@pantryrun.app for relay copies) |
 | Committed to following the Families Policy | ❌ No (not targeted at children) |
-| Follows Google Play Families Policy | ❌ No |
-
-### Data Safety Form Answers (Copy-Paste Ready)
-
-**Does your app collect or share any of the required user data types?**
-→ No
-
-(With "No" selected, Play skips the per-type questions. The deletion question
-below appears in App content → Data deletion; answer it as follows.)
-
-**Do you provide a way for users to request that their data is deleted?**
-→ Yes — in-app: Settings → Delete All Data (works without any account; there
-are no accounts). Relay-side encrypted blobs expire automatically within 30
-days and are undecryptable once the local keys are destroyed.
+| Independent security review | Optional; not claimed |
 
 **URL of your app's privacy policy:**
-→ `https://groceryapp.app/privacy`
+→ `https://www.pantryrun.app/privacy`
 
 ---
 
@@ -111,77 +133,87 @@ days and are undecryptable once the local keys are destroyed.
 
 Navigate to: **App Store Connect → PantryRun → App Privacy**
 
-### Privacy Label Configuration
-
-Click "Edit" next to App Privacy and configure as follows:
+Apple's definition of "collect" is transmitting data off the device in a way
+that is accessible to the developer or third-party partners for longer than
+necessary to service the request in real time.
 
 #### Data Used to Track You
 → **No** — PantryRun does not track users across apps or websites.
 
-#### Data Linked to You
-→ **No** — PantryRun does not link any collected data to the user's identity.
+#### Data Collected → **Yes**, configure these types:
 
-#### Data Collected
+| Apple data type | Linked to the user? | Tracking? | Purpose | Why |
+|---|---|---|---|---|
+| **User Content → Photos or Videos** | No | No | App Functionality | Flyer photos the user chooses to upload reach the developer's relay (and possibly Alibaba Cloud as processor) unencrypted. Processed and discarded, but readable by the developer, so declare it |
+| **Identifiers → Device ID** | No | No | App Functionality | App-generated random device ID + family ID kept by the relay for routing (30 days after last connect). No account, so not linked to an identity |
 
-Select **"No, we do not collect data from this app"**.
+"Linked to you" = linked to the user's identity (account, name, email, phone).
+PantryRun has none of those, so both are **Data Not Linked to You**.
 
-Apple's definition of "collect" is transmitting data off the device in a way
-that is accessible to the developer or third-party partners for longer than
-necessary to service the request. Nothing in v1 meets that definition:
+**Not declared, with reasons:**
 
-| Flow | Why it is not "collected" under Apple's definition |
-|------|-----------------------------------------------------|
-| Sync blobs / pairing key / flyer photos → user's own self-hosted relay | The destination is a server the user installs and controls; the developer never has access. Sync payloads are additionally E2E-encrypted ciphertext |
-| Barcode number → Open Food Facts (opt-in) | Sent solely to service the lookup request, with no identifiers; not retained by or accessible to the developer |
-| Crash Data | Not transmitted at all — no Sentry DSN exists in any v1 build and the SDK never initializes |
+- **Other User Content (ciphertext lists) — discussion.** The relay keeps
+  E2E-encrypted updates for up to 30 days but the developer cannot read them;
+  under Apple's "accessible to the developer" test they are arguably not
+  collected. Conservative alternative: declare **User Content → Other User
+  Content, Not Linked, App Functionality**. Recommendation: declare it if App
+  Review asks, or if you prefer the label to match the Play answer above.
+- **Coarse Location (FSA):** sent only to service the lookup, not retained per
+  device → not collected under Apple's definition.
+- **Purchases:** processed by Apple; nothing reaches the developer.
+- **Crash Data:** none (no Sentry DSN).
+- **Barcode → Open Food Facts:** serviced in real time, no identifier.
 
-This matches `NSPrivacyCollectedDataTypes: []` in `app.json` — the empty array
-is **deliberate**, not an omission.
+This matches `NSPrivacyCollectedDataTypes` in `app.json` and
+`ios/PantryRun/PrivacyInfo.xcprivacy` (PhotosorVideos + DeviceID, not linked,
+no tracking, App Functionality). Keep the label and the manifest in step.
 
 ### Privacy Nutrition Label Summary (What Users See)
 
 ```
-Data Not Collected
-
-The developer does not collect any data from this app.
+Data Not Linked to You
+  The following data may be collected but it is not linked to your identity:
+  • User Content (Photos or Videos)
+  • Identifiers (Device ID)
 
 Data Used to Track You: None
-Data Linked to You:     None
-Data Not Linked to You: None
 ```
 
 ### Privacy Policy URL for App Store Connect
-→ `https://groceryapp.app/privacy`
+→ `https://www.pantryrun.app/privacy`
 
 ---
 
 ## 3. Apple Privacy Manifest (NSPrivacyManifest)
 
-Already configured in `app.json` under `expo.ios.privacyManifests`:
+Configured in `app.json` under `expo.ios.privacyManifests` and committed in
+`ios/PantryRun/PrivacyInfo.xcprivacy` (the native file is what ships — the
+native tree is committed):
 
 ```json
 {
   "NSPrivacyTracking": false,
   "NSPrivacyTrackingDomains": [],
   "NSPrivacyAccessedAPITypes": [
-    {
-      "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
-      "NSPrivacyAccessedAPITypeReasons": ["C617.1"]
-    },
-    {
-      "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
-      "NSPrivacyAccessedAPITypeReasons": ["CA92.1"]
-    },
-    {
-      "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategorySystemBootTime",
-      "NSPrivacyAccessedAPITypeReasons": ["35F9.1"]
-    },
-    {
-      "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryDiskSpace",
-      "NSPrivacyAccessedAPITypeReasons": ["E174.1"]
-    }
+    { "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp", "NSPrivacyAccessedAPITypeReasons": ["C617.1"] },
+    { "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults", "NSPrivacyAccessedAPITypeReasons": ["CA92.1"] },
+    { "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategorySystemBootTime", "NSPrivacyAccessedAPITypeReasons": ["35F9.1"] },
+    { "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryDiskSpace", "NSPrivacyAccessedAPITypeReasons": ["E174.1"] }
   ],
-  "NSPrivacyCollectedDataTypes": []
+  "NSPrivacyCollectedDataTypes": [
+    {
+      "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypePhotosorVideos",
+      "NSPrivacyCollectedDataTypeLinked": false,
+      "NSPrivacyCollectedDataTypeTracking": false,
+      "NSPrivacyCollectedDataTypePurposes": ["NSPrivacyCollectedDataTypePurposeAppFunctionality"]
+    },
+    {
+      "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeDeviceID",
+      "NSPrivacyCollectedDataTypeLinked": false,
+      "NSPrivacyCollectedDataTypeTracking": false,
+      "NSPrivacyCollectedDataTypePurposes": ["NSPrivacyCollectedDataTypePurposeAppFunctionality"]
+    }
+  ]
 }
 ```
 
@@ -202,33 +234,33 @@ Already configured in `app.json` under `expo.ios.privacyManifests`:
 
 **Privacy Policy URL:**
 ```
-https://groceryapp.app/privacy
+https://www.pantryrun.app/privacy
 ```
 
 **Short Description (80 chars max):**
 ```
-Privacy-first grocery lists. Encrypted, self-hosted family sync. No accounts needed.
+Private family grocery lists. End-to-end encrypted sync. No accounts needed.
 ```
 
 **Full Description excerpt for privacy:**
 ```
 🔒 PRIVACY-FIRST
-• Your data stays on YOUR device — encrypted end to end
+• Your lists stay on YOUR device and sync end-to-end encrypted
 • No accounts, no sign-ups, no ads, no analytics, no tracking
-• Family sync through YOUR OWN self-hosted server — we never see your data
-• Open about how it works: read our privacy policy at groceryapp.app/privacy
+• Free sync through the PantryRun relay, which can't read your lists — or run your own server
+• Read exactly what we can and can't see: www.pantryrun.app/privacy
 ```
 
 ### Apple App Store Listing
 
 **Privacy Policy URL:**
 ```
-https://groceryapp.app/privacy
+https://www.pantryrun.app/privacy
 ```
 
 **Support URL:**
 ```
-https://groceryapp.app
+https://www.pantryrun.app/support
 ```
 
 ---
@@ -239,32 +271,32 @@ https://groceryapp.app
 
 #### Camera
 **Title:** `Camera Access`
-**Message:** `PantryRun uses your camera to scan barcodes, scan QR pairing codes, and photograph store flyers for price extraction. Barcode/QR frames are processed in real-time and discarded. Flyer photos are sent (without location metadata) to your relay server for AI extraction, then discarded.`
+**Message:** `PantryRun uses your camera to scan barcodes, scan QR pairing codes, and photograph store flyers for price extraction. Barcode/QR frames are processed in real-time and discarded. Flyer photos are sent (without location metadata) to your sync relay for automated price extraction, then discarded.`
 
 #### Microphone
-**Not requested in v1.** The app declares no RECORD_AUDIO permission and never
-touches the microphone — "voice input" is an on-device text modal. This
-rationale block returns only if a real voice feature ships.
+**Not requested on Android.** The app declares no RECORD_AUDIO permission and
+never records audio.
 
 #### Notifications (Android 13+)
 **Title:** `Notification Permission`
 **Message:** `PantryRun sends local notifications for shopping reminders and family list updates. No remote push notifications — all notifications come from the app on your device.`
 
-### iOS (Info.plist strings — already in app.json)
+### iOS (Info.plist strings — in app.json and the committed Info.plist)
 
 | Key | Value |
 |-----|-------|
 | NSCameraUsageDescription | Scan barcodes to add items to your grocery list, scan QR codes to join your family, and photograph store flyers for price extraction |
 | NSPhotoLibraryUsageDescription | Select a store flyer photo from your library so PantryRun can read its prices |
+| NSMicrophoneUsageDescription | PantryRun never records audio. iOS asks for this because the camera component used for barcode, QR and flyer scanning can also record video with sound; PantryRun does not use that. |
 | NSLocalNetworkUsageDescription | PantryRun connects to your self-hosted sync relay on your local network to keep your family's grocery lists in sync |
 | ITSAppUsesNonExemptEncryption | true (see Section 0) |
 
-> Microphone and speech-recognition purpose strings, the Siri entitlement, and
-> the App Group entitlement were **removed for v1** (2026-07-28): no voice
-> feature ships ("voice input" is an on-device text modal that never touches
-> the microphone), and an unused mic/Siri declaration invites reviewer
-> questions the app cannot answer. Restore them only when a real voice feature
-> ships.
+> **Microphone:** the purpose string is back (2026-10-11) for a binary reason,
+> not a feature: `expo-camera` links AVFoundation audio-recording APIs, and App
+> Store processing flags binaries that reference microphone APIs without
+> `NSMicrophoneUsageDescription`. The app never calls them, never prompts for
+> the microphone, and the string says so. Speech recognition, the Siri
+> entitlement and the App Group entitlement remain removed.
 
 ---
 
@@ -278,7 +310,7 @@ that never initializes would be an over-declaration.
 
 ### Re-enabling later (all four steps or none):
 1. Put the real DSN in `eas.json` → `build.production.env.EXPO_PUBLIC_SENTRY_DSN`.
-2. Re-declare **Crash Data** (Apple: Crash Data → App Functionality; Play:
+2. Add **Crash Data** to the declarations in §§1–2 (Apple: Crash Data → App Functionality; Play:
    App info and performance → Crash logs, shared with Sentry).
 3. Restore the Crash Reporting section of `privacy/index.html` and the
    PrivacyScreen toggle (the `sentryEnabled` setting still exists and defaults
@@ -288,68 +320,60 @@ that never initializes would be an over-declaration.
 
 ---
 
-## 7. Managed vs Self-Hosted — What Differs for Compliance
+## 7. Hosted (PantryRun relay) vs Self-Hosted — What Differs for Compliance
 
-> **v1 note:** the Managed tier is **hidden** (`MANAGED_TIER_ENABLED = false`
-> in SettingsScreen.tsx) — its un-buyable subscription-key field risked Apple
-> 3.1.1 rejection and must never ship alongside a live IAP flow. **Update
-> (Goal 7, 2026-07-28, builds ≥ 1.31.0):** the app now HAS an in-app purchase
-> path — the `pantryrun_plus_annual` auto-renewing subscription (PantryRun
-> Plus, $14.99/yr) unlocking the Trip Optimizer, implemented via
-> react-native-iap with all entitlement logic in
-> `src/config/entitlements.ts`. Store questionnaires for such builds answer
-> "has in-app purchases: yes" — see `audit-package/08-SUBMISSION-HANDOFF.md`
-> §5 for the exact console answers; the no-data-collection privacy posture is
-> unchanged. The Managed tier itself stays hidden; this table
-> documents both modes for when the managed tier returns with its own IAP
-> (see docs/MONETIZATION.md).
+> The hosted tier is now **on and the default** (`MANAGED_TIER_ENABLED = true`
+> in SettingsScreen.tsx), and it is **free** — nothing about it is sold, so it
+> adds no purchase path. The old un-buyable subscription-key input is not
+> rendered (Apple 3.1.1: the only purchase path is the `pantryrun_plus_annual`
+> IAP, see `audit-package/08-SUBMISSION-HANDOFF.md` §5). Deployment:
+> `docs/deploy-hosted-relay.md`.
 
-| Aspect | Self-Hosted | Managed |
-|--------|-------------|---------|
-| **Relay server** | User runs it | ShiftLogic runs it |
-| **Data at rest on server** | Encrypted blobs only (30-day retention, `UPDATE_TTL_MS`) | Encrypted blobs only (30-day retention) |
-| **Privacy policy disclosure** | "You run your own server" | "We relay encrypted data" |
-| **Data safety form** | No server-side data | Relay logs (device IDs, timestamps) |
-| **GDPR/data deletion** | In-app Delete All Data + 30-day relay auto-expiry | Email request to privacy@ |
-| **Price scraping** | Allowed (self-host only) | Not available |
-| **Crash reporting** | None in v1 (no Sentry DSN) | None in v1 |
-
-For Google Play and Apple, the managed tier is the one that needs compliance disclosure since it involves a third-party server. The self-hosted tier has no server-side data collection by definition.
+| Aspect | Self-Hosted | PantryRun relay (default) |
+|--------|-------------|---------------------------|
+| **Relay server** | User runs it | Developer runs it (`relay.pantryrun.app`, behind Cloudflare) |
+| **Data at rest on server** | Encrypted blobs + routing metadata (30-day retention) | Same — encrypted blobs + routing metadata, 30-day retention |
+| **Flyer photos** | User's relay (+ whatever extractor they configure) | Developer's relay; Ollama on our hardware, or Alibaba Cloud Qwen-VL if `QWEN_API_KEY` is set |
+| **Store data-safety forms** | Would be "no collection" | Declarations in §§1–2 |
+| **Data deletion** | In-app Delete All Data; operator deletes relay data | In-app Delete All Data; relay copies expire in 30 days or on email to privacy@pantryrun.app |
+| **Price scraping toggle** | Available (no sources implemented yet) | Shown, disabled ("Self-host only") |
+| **Crash reporting** | None (no Sentry DSN) | None |
 
 ---
 
 ## 8. Checklist: Before Submitting
 
 ### Google Play Console
-- [ ] Data Safety form filled (see Section 1 — "No" to collection; deletion answer per Section 1)
+- [ ] Data Safety form filled per Section 1 (Photos, Device or other IDs, Approximate location; decide on Other user-generated content)
 - [ ] Export compliance / government regulations answered (see Section 0)
-- [ ] Privacy policy URL added: `https://groceryapp.app/privacy`
+- [ ] Privacy policy URL: `https://www.pantryrun.app/privacy` — with the updated policy (`site/privacy/index.html`) deployed
 - [ ] `INTERNET` permission justified
 - [ ] `READ_EXTERNAL_STORAGE` maxSdkVersion=32 justified
 - [ ] No SYSTEM_ALERT_WINDOW (removed)
-- [ ] Target API level meets Play's floor. As of July 2026 the app targets
-      **SDK 35 (Android 15)** — Expo SDK 56's default (`ExpoRootProjectPlugin.kt`
-      targetSdk fallback "35"; no override in this project) — which satisfies
-      the current requirement for new apps. **From August 31, 2026, new apps
-      and updates must target SDK 36 (Android 16)** — if submitting after that
-      date, bump the target first. Source:
+- [ ] Target API level meets Play's floor. **From August 31, 2026, new apps
+      and updates must target SDK 36 (Android 16)** — confirm the build's
+      target before submitting. Source:
       https://support.google.com/googleplay/android-developer/answer/11926878
-      (checked 2026-07-28)
 - [ ] Release bundle signed with the upload keystore (PANTRYRUN_UPLOAD_* gradle
       props or EAS credentials) — NOT the debug keystore
 - [ ] versionCode/versionName in android/app/build.gradle match app.json
+- [ ] `https://pantryrun.app/.well-known/assetlinks.json` and the `www.` copy
+      deployed with the app-signing SHA-256 (`site/README.md`)
 
 ### Apple App Store Connect
-- [ ] App Privacy labels configured (see Section 2 — "Data Not Collected")
+- [ ] App Privacy labels configured per Section 2 (Photos or Videos + Device ID, not linked)
 - [ ] Encryption questions answered (see Section 0); ITSAppUsesNonExemptEncryption=true in build
 - [ ] Annual BIS self-classification report filed (5D992.c)
-- [ ] Privacy policy URL added: `https://groceryapp.app/privacy`
-- [ ] Privacy manifest included in build (via app.json)
-- [ ] Info.plist usage descriptions present
+- [ ] Privacy policy URL: `https://www.pantryrun.app/privacy`
+- [ ] Support URL: `https://www.pantryrun.app/support` (deployed, not 404)
+- [ ] Privacy manifest included in build (`ios/PantryRun/PrivacyInfo.xcprivacy`)
+- [ ] Info.plist usage descriptions present (incl. NSMicrophoneUsageDescription)
 - [ ] No tracking (NSPrivacyTracking = false)
 - [ ] apple-app-site-association deployed at
-      https://groceryapp.app/.well-known/apple-app-site-association with the
-      real Team ID (repo copy has TEAMID placeholder)
+      `https://pantryrun.app/.well-known/apple-app-site-association` **and**
+      `https://www.pantryrun.app/.well-known/apple-app-site-association` with the
+      real Team ID (`site/.well-known/` has the `TEAMID` placeholder)
+- [ ] Hosted relay live: `curl https://relay.pantryrun.app/health` → `{"status":"ok",…}`
 
 ### In-App
 - [ ] Privacy screen accessible from Settings
@@ -358,3 +382,5 @@ For Google Play and Apple, the managed tier is the one that needs compliance dis
 - [ ] Barcode lookup consent prompt shows before first scan
 - [ ] Permission rationale modal shows before OS dialog
 - [ ] Links to privacy policy and ToS work
+- [ ] In-app PrivacyScreen copy no longer says sync is self-hosted only (see the
+      open item in SHIP-READINESS.md)

@@ -8,7 +8,14 @@
  * Design:
  *  - Converts relay URL from ws:// to http:// for HTTP calls (same pattern as
  *    settings.ts testRelayConnection)
- *  - GETs /api/pool/prices?storeId=X, filters results for matching items
+ *  - GETs /api/pool/prices?storeId=X for the store's whole pooled list and
+ *    matches items on the device with the live feeds' relevance matcher
+ *    (live-prices.ts findCandidateRows) — no item name leaves the device
+ *  - Pool store ids are "<app store id>:<FSA>" (poolStoreId), the same id
+ *    contribute.ts files contributions under; no FSA set, no lookup
+ *  - A pooled median prices one package: its size comes from the product
+ *    name when it has one, otherwise the offer is one package of unknown
+ *    content (never "each")
  *  - Returns PriceResult with confidence derived from pool data freshness
  *
  * Critical rules:
@@ -20,6 +27,7 @@ import type { PriceAdapter } from './adapter';
 import type { PriceResult, PriceSourceTier, ConfidenceLevel } from './types';
 import { getSettings } from '../config/settings';
 import { getRelayHttpBaseUrl } from './relay-client';
+import { findCandidateRows, normalizeFsa, packageFromName, UNKNOWN_PACKAGE_UNIT } from './live-prices';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -39,8 +47,19 @@ interface PoolApiResponse {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function normalizeItemName(name: string): string {
-  return name.toLowerCase().trim();
+/** The pool's report window: a flyer week runs about two weeks before validTo. */
+const FLYER_SPAN_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * The pool store id for an app store in a region: "<storeId>:<FSA>" (e.g.
+ * "no-frills:M5V"). Contributions are filed under it and lookups ask for it,
+ * so both sides agree. null without a usable FSA — a region-less id would
+ * mix every region's prices together.
+ */
+export function poolStoreId(storeId: string, fsa: string | undefined | null): string | null {
+  const region = normalizeFsa(fsa);
+  const store = storeId.trim();
+  return region && store ? `${store}:${region}` : null;
 }
 
 /**
@@ -74,16 +93,18 @@ export class CloudFlyerAdapter implements PriceAdapter {
   }
 
   /**
-   * Fetch pooled prices for a store from the relay server.
+   * Fetch pooled prices for a store (in the user's region) from the relay.
    */
   private async fetchPoolPrices(
     storeId: string,
   ): Promise<PoolPriceEntry[]> {
+    const poolId = poolStoreId(storeId, getSettings().flippFsa);
+    if (!poolId) return [];
     const baseUrl = getRelayHttpBaseUrl();
     if (!baseUrl) return [];
 
     try {
-      const url = `${baseUrl}/api/pool/prices?storeId=${encodeURIComponent(storeId)}`;
+      const url = `${baseUrl}/api/pool/prices?storeId=${encodeURIComponent(poolId)}`;
       const response = await fetch(url, {
         method: 'GET',
         headers: { Accept: 'application/json' },
@@ -93,26 +114,21 @@ export class CloudFlyerAdapter implements PriceAdapter {
       if (!response.ok) return [];
 
       const data: PoolApiResponse = await response.json();
-      return data.prices || [];
+      return Array.isArray(data.prices) ? data.prices : [];
     } catch {
       return [];
     }
   }
 
-  async getPrice(
-    itemName: string,
-    storeId: string,
-  ): Promise<PriceResult | null> {
-    const prices = await this.fetchPoolPrices(storeId);
-    const normalized = normalizeItemName(itemName);
-    const match = prices.find((p) => p.itemName === normalized);
-
-    if (!match || match.median === null) return null;
-
+  private toPriceResult(match: PoolPriceEntry, storeId: string): PriceResult {
+    const price = match.median as number;
+    const pkg = packageFromName(match.itemName);
     return {
-      price: match.median,
-      unitPrice: match.median,
-      unit: 'each',
+      price,
+      unitPrice: price,
+      unit: pkg?.unit ?? UNKNOWN_PACKAGE_UNIT,
+      ...(pkg ? { packageSize: pkg.packageSize } : {}),
+      pricingBasis: 'package',
       saleInfo: null,
       source: {
         adapterId: this.id,
@@ -120,9 +136,36 @@ export class CloudFlyerAdapter implements PriceAdapter {
         storeId,
         storeName: storeId, // pool doesn't store store names separately
       },
-      timestamp: match.validTo - 14 * 24 * 60 * 60 * 1000, // estimate: ~2 weeks before validTo
+      timestamp: match.validTo - FLYER_SPAN_MS, // estimate: ~2 weeks before validTo
       confidence: getConfidenceLevel(match.count, match.validTo),
+      matchedName: match.itemName,
+      validTo: match.validTo,
     };
+  }
+
+  /** Ranked pooled matches per item (best first, newest flyer week on a tie). */
+  async getCandidates(
+    items: string[],
+    storeId: string,
+  ): Promise<Map<string, PriceResult[]>> {
+    const results = new Map<string, PriceResult[]>();
+    const now = Date.now();
+    const prices = (await this.fetchPoolPrices(storeId)).filter(
+      (p) => typeof p.itemName === 'string' && typeof p.median === 'number' && p.median > 0 && p.validTo > now,
+    );
+    if (prices.length === 0) return results;
+    for (const item of items) {
+      const rows = findCandidateRows(item, prices, (p) => p.itemName, (p) => p.median, (p) => p.validTo);
+      if (rows.length > 0) results.set(item, rows.map((p) => this.toPriceResult(p, storeId)));
+    }
+    return results;
+  }
+
+  async getPrice(
+    itemName: string,
+    storeId: string,
+  ): Promise<PriceResult | null> {
+    return (await this.getCandidates([itemName], storeId)).get(itemName)?.[0] ?? null;
   }
 
   async getPrices(
@@ -130,30 +173,7 @@ export class CloudFlyerAdapter implements PriceAdapter {
     storeId: string,
   ): Promise<Map<string, PriceResult>> {
     const results = new Map<string, PriceResult>();
-    const prices = await this.fetchPoolPrices(storeId);
-
-    for (const item of items) {
-      const normalized = normalizeItemName(item);
-      const match = prices.find((p) => p.itemName === normalized);
-
-      if (match && match.median !== null) {
-        results.set(item, {
-          price: match.median,
-          unitPrice: match.median,
-          unit: 'each',
-          saleInfo: null,
-          source: {
-            adapterId: this.id,
-            tier: this.tier,
-            storeId,
-            storeName: storeId,
-          },
-          timestamp: match.validTo - 14 * 24 * 60 * 60 * 1000,
-          confidence: getConfidenceLevel(match.count, match.validTo),
-        });
-      }
-    }
-
+    for (const [item, list] of await this.getCandidates(items, storeId)) results.set(item, list[0]);
     return results;
   }
 }

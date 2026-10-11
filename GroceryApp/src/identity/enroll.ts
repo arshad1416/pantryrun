@@ -12,7 +12,7 @@
  * re-enrollment requires a fresh family invite from an existing member.
  */
 
-import type { RelayEnrollmentResponse } from '../types';
+import type { DeviceKeypair, RelayEnrollmentResponse } from '../types';
 // expo-secure-store loaded lazily to avoid Hermes crash (chains to expo-asset at eval time)
 let SecureStore: any = null;
 async function getSecureStore(): Promise<any> {
@@ -33,6 +33,9 @@ const RELAY_URL_ALIAS = 'groceryapp.relay_url';
  * @param relayBaseUrl - Relay base URL (e.g. 'http://192.168.0.102:8080')
  * @param deviceToken - This device's opaque device token (base64 public key)
  * @param familyInviteToken - The invite token JSON string from QR/deep link
+ * @param deviceKeypair - This device's keypair. When given, its Ed25519
+ *   signing key is registered with the relay (with a proof of possession) so
+ *   this device can issue invites the relay accepts.
  * @returns The relay token string.
  * @throws If enrollment fails (bad invite, server error, network).
  */
@@ -40,10 +43,16 @@ export async function enrollWithRelay(
   relayBaseUrl: string,
   deviceToken: string,
   familyInviteToken: string,
+  deviceKeypair?: DeviceKeypair,
 ): Promise<string> {
   // Strip trailing slashes
   const baseUrl = relayBaseUrl.replace(/\/+$/, '');
   const url = `${baseUrl}/enroll`;
+  let signing: { signingKey?: string; signingProof?: string } = {};
+  if (deviceKeypair) {
+    const { createEnrollmentSigningProof } = await import('./family');
+    signing = await createEnrollmentSigningProof(deviceKeypair, JSON.parse(familyInviteToken), deviceToken);
+  }
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -51,6 +60,7 @@ export async function enrollWithRelay(
     body: JSON.stringify({
       deviceToken,
       familyInviteToken,
+      ...signing,
     }),
   });
 

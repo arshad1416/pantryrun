@@ -30,6 +30,7 @@ import {
   resolveEntitlement,
   isPlusEntitled,
   PLUS_PRODUCT_ID,
+  EXPIRY_GRACE_MS,
 } from '../src/config/entitlements';
 import { getDoc } from '../src/sync/yjs-adapter';
 import { getDatabase } from '../src/storage/database';
@@ -116,7 +117,9 @@ describe('purchase then relaunch (restart survival)', () => {
   });
 
   it('an expired record does not entitle', async () => {
-    await persistGrantDirectly({ expiresAt: Date.now() - 1000 });
+    // Past expiry AND the offline grace window (iap-store-recheck.test.ts
+    // covers the grace window itself).
+    await persistGrantDirectly({ expiresAt: Date.now() - EXPIRY_GRACE_MS - 1000 });
     resetEntitlementState();
     const entitled = await resolveEntitlement();
     expect(entitled).toBe(false);
@@ -135,6 +138,17 @@ describe('purchase then relaunch (restart survival)', () => {
 // ─── 3. Second family device via the family Yjs document ────────────────────
 
 describe('second family device (CRDT sync path)', () => {
+  // Device B is a member of the family the record was bought for — a synced
+  // record only entitles inside its own family (iap-family-scope.test.ts).
+  beforeEach(async () => {
+    const { leaveFamily } = require('../src/identity/family');
+    await leaveFamily();
+    await require('expo-secure-store').setItemAsync(
+      'groceryapp.family.membership',
+      JSON.stringify({ familyId: 'fam-1', deviceId: 'device-b', joinedAt: 1 }),
+    );
+  });
+
   it('an entitlement record landing in the family doc entitles this device and persists', async () => {
     // Device B starts un-entitled and resolved (observer installed).
     const before = await resolveEntitlement();

@@ -93,10 +93,14 @@ export default function PairingScreen({ navigation, route }: Props) {
           return;
         }
 
+        // A family invite is single-use and belongs to the inviter. Saved as
+        // this device's pairingCode, Settings showed it as "Scan to join your
+        // family list", and anyone scanning it was refused as already used.
+        // A legacy bare relay code is reusable, so that one is still kept.
         await updateSettings({
           relayUrl: code.relayUrl,
           relayPort: port,
-          pairingCode: tokenStr,
+          ...(invite ? {} : { pairingCode: tokenStr }),
         });
         setConnectionStatus('connected');
 
@@ -118,7 +122,9 @@ export default function PairingScreen({ navigation, route }: Props) {
         const httpBase = code.relayUrl
           .replace(/^ws:/, 'http:')
           .replace(/^wss:/, 'https:');
-        await enrollWithRelay(httpBase, getDeviceId(), JSON.stringify(invite));
+        // Passing the keypair registers this device's signing key with the
+        // relay, so it can invite the next family member itself.
+        await enrollWithRelay(httpBase, getDeviceId(), JSON.stringify(invite), getDeviceKeypair());
         await acceptFamilyInvite(invite, getDeviceKeypair());
 
         const { getMasterKey, getMasterKeyType } = await import('../crypto');

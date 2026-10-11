@@ -3,8 +3,10 @@ import { getSettings } from '../config/settings';
 
 export async function navigateToStore(storeName: string): Promise<void> {
   const settings = getSettings();
-  const fsa = settings.flippFsa ?? 'L0R';
-  const query = encodeURIComponent(`${storeName} ${fsa}`);
+  // No postal code set: search the store name alone and let the maps app use
+  // the phone's location, rather than sending everyone to Niagara (L0R).
+  const fsa = settings.flippFsa?.trim();
+  const query = encodeURIComponent(fsa ? `${storeName} ${fsa}` : storeName);
   const pref = settings.navigationApp;
 
   let url: string;

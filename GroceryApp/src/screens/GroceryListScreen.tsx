@@ -55,13 +55,8 @@ import CategoryHeader from '../components/CategoryHeader';
 import GotItHeader from '../components/GotItHeader';
 import type { StoreTotal } from '../components/StoreTotalBar';
 import { themeColors } from '../components/groceryTheme';
-import {
-  useEntitlementStore,
-  purchasePlus,
-  restorePlus,
-  PLUS_PAYWALL_COPY,
-  PLUS_PRICE_DISPLAY,
-} from '../config/entitlements';
+import { useEntitlementStore } from '../config/entitlements';
+import PlusPaywall, { usePlusPriceLabel } from '../components/PlusPaywall';
 
 // New Antigravity components
 import SearchBar from '../components/SearchBar';
@@ -118,33 +113,11 @@ export default function GroceryListScreen({ route, navigation }: Props) {
   // PantryRun Plus — entitlement state is computed ONLY in
   // src/config/entitlements.ts; this screen just reads and routes to it.
   const isPlus = useEntitlementStore((s) => s.isPlus);
-  const handlePlusUpsell = useCallback(() => {
-    Alert.alert('PantryRun Plus', PLUS_PAYWALL_COPY, [
-      {
-        text: `Subscribe • ${PLUS_PRICE_DISPLAY}`,
-        onPress: () => {
-          purchasePlus().then((ok) => {
-            if (!ok) {
-              const err = useEntitlementStore.getState().lastError;
-              if (err) Alert.alert('Purchase failed', err);
-            }
-          });
-        },
-      },
-      {
-        text: 'Restore Purchase',
-        onPress: () => {
-          restorePlus().then((ok) => {
-            if (!ok) {
-              const err = useEntitlementStore.getState().lastError;
-              if (err) Alert.alert('Restore failed', err);
-            }
-          });
-        },
-      },
-      { text: 'Not Now', style: 'cancel' },
-    ]);
-  }, []);
+  // Plus is sold on the PlusPaywall modal (Guideline 3.1.2 disclosures),
+  // never from a system Alert.
+  const [showPlusPaywall, setShowPlusPaywall] = useState(false);
+  const plusPriceLabel = usePlusPriceLabel();
+  const handlePlusUpsell = useCallback(() => setShowPlusPaywall(true), []);
 
   // Price store
   const priceLoading = usePriceStore((s) => s.isLoading);
@@ -269,14 +242,15 @@ export default function GroceryListScreen({ route, navigation }: Props) {
       // via the normal Yjs path), then advance the clock so claim badges and
       // offer expiry update.
       try {
-        yjsSweepExpiredClaims(listId);
+        // The visible items come from the store, not the doc: refresh it.
+        if (yjsSweepExpiredClaims(listId) > 0) loadItems(listId).catch(() => {});
       } catch {
         // Yjs doc not yet hydrated — nothing to sweep
       }
       setClock(Date.now());
     }, 60_000);
     return () => clearInterval(timer);
-  }, [listId]);
+  }, [listId, loadItems]);
 
   useEffect(() => {
     loadItems(listId).catch((err: Error) => {
@@ -294,14 +268,18 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     }
   }, [listId, loadItems]);
 
+  // Store discovery asks the relay for the user's region, so it waits for the
+  // price opt-in; re-checked on focus, so opting in (Settings or the flyer
+  // scan prompt) loads stores without a restart.
   useEffect(() => {
+    if (!isFocused || !(getSettings().pricingOptedIn ?? false)) return;
     discoverStores()
       .then((stores) => {
         setAvailableStores(stores);
         setLiveStatus(getLivePriceStatus());
       })
       .catch(err => console.warn('[stores] Failed to load stores:', err));
-  }, []);
+  }, [isFocused, showFlyerScan]);
 
   // Fetch prices for basket items whose price is missing, older than an hour,
   // or was fetched under a different name (a rename is a different product).
@@ -549,7 +527,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     }
     Alert.alert(
       'Turn on price lookups to scan flyers?',
-      'Flyer scanning reads prices from your photo into your local price list. The photo (with location metadata removed) is sent to your own relay server for extraction and then discarded — your item names and shopping habits never leave this device. You can turn this off anytime in Settings.',
+      'Flyer scanning reads prices from your photo into your local price list. The photo (with location metadata removed) is sent to your sync relay (PantryRun’s, or your own if you self-host) for extraction and then discarded — your item names and shopping habits never leave this device. You can turn this off anytime in Settings.',
       [
         { text: 'Not now', style: 'cancel' },
         {
@@ -1102,7 +1080,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
             >
               <Ionicons name="lock-closed" size={14} color={isDark ? '#FFC107' : '#B28704'} />
               <Text style={[styles.findPricesText, { color: isDark ? '#FFC107' : '#B28704' }]}>
-                Trip Optimizer — unlock with PantryRun Plus ({PLUS_PRICE_DISPLAY})
+                Trip Optimizer — unlock with PantryRun Plus ({plusPriceLabel})
               </Text>
             </TouchableOpacity>
           )}
@@ -1348,6 +1326,9 @@ export default function GroceryListScreen({ route, navigation }: Props) {
           handleRefreshPrices();
         }}
       />
+
+      {/* PantryRun Plus paywall */}
+      <PlusPaywall visible={showPlusPaywall} onClose={() => setShowPlusPaywall(false)} />
     </View>
   );
 }
