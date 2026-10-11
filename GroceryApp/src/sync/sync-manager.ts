@@ -59,10 +59,22 @@ export interface SyncCallbacks {
   onRemoteItemsUpdate?: (listId: string, items: GroceryItem[]) => void;
 }
 
+/** Whether a finished transaction added structs or deleted anything. */
+function transactionChanged(tr: Y.Transaction): boolean {
+  if (tr.deleteSet.clients.size > 0) return true;
+  if (tr.afterState.size !== tr.beforeState.size) return true;
+  for (const [client, clock] of tr.afterState) {
+    if (tr.beforeState.get(client) !== clock) return true;
+  }
+  return false;
+}
+
 // ─── Sync Manager ────────────────────────────────────────────────────────────
 
 export class SyncManager {
   private pendingWrites = new Set<Promise<void>>();
+  /** Per list: a queued write that has not started, and the revision it will write. */
+  private queuedPersists = new Map<string, { write: Promise<void>; capture: () => Promise<void> }>();
   private generation = 0;
   private recoveryPending = new Set<string>();
   private corruptSnapshots = new Set<string>();
@@ -339,8 +351,11 @@ export class SyncManager {
     // A newly discovered list must also observe future edits made on this device.
     this.registerList(listId);
     const doc = getDoc(listId);
+    const pendingBefore = [doc.store.pendingStructs?.update, doc.store.pendingDs];
+    let tr = null as Y.Transaction | null;
     // Apply with origin 'remote' so local observers can distinguish
-    Y.transact(doc, () => {
+    Y.transact(doc, (t) => {
+      tr = t;
       Y.applyUpdate(doc, update);
     }, 'remote');
 
@@ -348,6 +363,15 @@ export class SyncManager {
     if (extractList(listId)) {
       getDoc('__lists_index__').getMap('listIds').set(listId, true);
     }
+
+    // Replays and reconnects redeliver updates this doc already holds. Each
+    // used to re-encrypt and rewrite the whole list and every item row; skip
+    // them when nothing changed — no new structs (state vector), no new
+    // deletions (a delete-only update leaves the state vector alone), and no
+    // change to the held-back pending update that the snapshot also carries.
+    const changed = !tr || transactionChanged(tr) ||
+      doc.store.pendingStructs?.update !== pendingBefore[0] || doc.store.pendingDs !== pendingBefore[1];
+    if (!changed) return;
 
     // Notify callbacks
     const items = extractItems(listId);
@@ -396,6 +420,12 @@ export class SyncManager {
 
   /**
    * Persist current Yjs state for a list to WatermelonDB.
+   *
+   * Writes coalesce per list: while one is queued and has not started, a
+   * later call replaces the revision it will write instead of queuing its
+   * own. A relay replay of hundreds of updates used to queue one full
+   * encrypted snapshot plus a row per item for each of them; now a list has at
+   * most one write running and one waiting, with no delay a quit could lose.
    */
   private async persistListToDB(listId: string): Promise<void> {
     // No key means nothing can be written at all. This used to `return`
@@ -406,7 +436,9 @@ export class SyncManager {
     if (!this.encryptionKey) {
       throw new Error(`no encryption key available; cannot persist list ${listId}`);
     }
-
+    // Capture one immutable revision and key now — the doc may be destroyed
+    // (unregisterList) before the write runs. Its snapshot and all row
+    // projections finish together before a newer revision starts.
     const list = extractList(listId);
     const items = extractItems(listId);
     const snapshot = JSON.stringify({
@@ -414,11 +446,24 @@ export class SyncManager {
       update: Array.from(Y.encodeStateAsUpdate(getDoc(listId))),
       recoveryPending: this.recoveryPending.has(listId),
     });
-    // Capture one immutable revision and key before queuing. Its snapshot and
-    // all row projections finish together before a newer revision starts.
     const key = new Uint8Array(this.encryptionKey);
     const corrupt = this.corruptSnapshots.has(listId);
-    await this.enqueuePersistence(() => this.writeCapturedState(listId, list, items, snapshot, key, corrupt));
+    const capture = () => this.writeCapturedState(listId, list, items, snapshot, key, corrupt);
+
+    const queued = this.queuedPersists.get(listId);
+    if (queued) {
+      queued.capture = capture;
+      return queued.write;
+    }
+    const entry = { write: Promise.resolve(), capture };
+    entry.write = this.enqueuePersistence(() => {
+      if (this.queuedPersists.get(listId) === entry) this.queuedPersists.delete(listId);
+      return entry.capture();
+    });
+    this.queuedPersists.set(listId, entry);
+    try { await entry.write; } finally {
+      if (this.queuedPersists.get(listId) === entry) this.queuedPersists.delete(listId);
+    }
   }
 
   private async writeCapturedState(listId: string, list: GroceryList | null, items: GroceryItem[], snapshot: string, key: Uint8Array, corrupt = false): Promise<void> {
