@@ -30,6 +30,7 @@ import {
   resolveEntitlement,
   isPlusEntitled,
   PLUS_PRODUCT_ID,
+  EXPIRY_GRACE_MS,
 } from '../src/config/entitlements';
 import { getDoc } from '../src/sync/yjs-adapter';
 import { getDatabase } from '../src/storage/database';
@@ -116,7 +117,9 @@ describe('purchase then relaunch (restart survival)', () => {
   });
 
   it('an expired record does not entitle', async () => {
-    await persistGrantDirectly({ expiresAt: Date.now() - 1000 });
+    // Past expiry AND the offline grace window (iap-store-recheck.test.ts
+    // covers the grace window itself).
+    await persistGrantDirectly({ expiresAt: Date.now() - EXPIRY_GRACE_MS - 1000 });
     resetEntitlementState();
     const entitled = await resolveEntitlement();
     expect(entitled).toBe(false);

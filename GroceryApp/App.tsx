@@ -162,8 +162,9 @@ function App() {
         // observer). Entitlement state is computed ONLY inside
         // src/config/entitlements.ts; everything else reads its store.
         try {
-          const { resolveEntitlement } = await import('./src/config/entitlements');
+          const { resolveEntitlement, startEntitlementLifecycle } = await import('./src/config/entitlements');
           await resolveEntitlement();
+          void startEntitlementLifecycle(); // store listener + launch/foreground re-check; never throws
         } catch (e) {
           console.warn('[init] Entitlement resolution failed:', e);
         }

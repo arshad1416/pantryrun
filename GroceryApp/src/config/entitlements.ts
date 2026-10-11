@@ -62,7 +62,13 @@ export interface PlusEntitlement {
   platform: 'ios' | 'android' | 'unknown';
   transactionId: string;
   purchasedAt: number;
-  /** null = non-expiring (store manages renewal; we re-check on restore). */
+  /**
+   * Store-reported end of the current period (iOS expirationDateIOS), ms.
+   * null when the store reports none — Google Play exposes no expiry to the
+   * client, only "is it still in getAvailablePurchases". Either way the
+   * purchasing device re-checks the store on launch / foreground
+   * (verifyEntitlementWithStore) and revokes on a definitive "not owned".
+   */
   expiresAt: number | null;
   source: 'purchase' | 'restore' | 'sync';
 }
@@ -101,11 +107,28 @@ export function isPlusEntitled(): boolean {
 
 // ─── Entitlement computation (the only place this logic exists) ──────────────
 
+/**
+ * How long past `expiresAt` a record still entitles. A renewal is only
+ * learned when the purchasing device next talks to the store and re-publishes
+ * the record, so a strict cutoff would lock an honest subscriber out while
+ * offline (or lock out the rest of the family until the purchaser opens the
+ * app). A cancelled subscription is still revoked immediately on the
+ * purchaser's next online launch: the store check, not this clock, is what
+ * revokes.
+ */
+export const EXPIRY_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** The purchase was made or restored with THIS device's store account, so
+ *  this device can (and must) re-verify it with the store. */
+function ownedByThisStoreAccount(record: PlusEntitlement): boolean {
+  return record.source === 'purchase' || record.source === 'restore';
+}
+
 function computeIsPlus(record: PlusEntitlement | null): boolean {
   if (!record) return false;
   if (record.productId !== PLUS_PRODUCT_ID) return false;
   if (!record.transactionId) return false;
-  if (record.expiresAt !== null && record.expiresAt < Date.now()) return false;
+  if (record.expiresAt !== null && record.expiresAt + EXPIRY_GRACE_MS < Date.now()) return false;
   return true;
 }
 
@@ -165,11 +188,27 @@ async function persistLocalRecord(record: PlusEntitlement): Promise<void> {
   });
 }
 
+/** Remove the local entitlement row (revocation). Single flat write. */
+async function deleteLocalRecord(): Promise<void> {
+  const rows = await getDatabase()
+    .get('entitlements')
+    .query(Q.where('product_id', PLUS_PRODUCT_ID))
+    .fetch();
+  if (rows.length === 0) return;
+  await getDatabase().write(async () => {
+    for (const row of rows as any[]) {
+      // destroyPermanently: the table is local-only, nothing syncs deletions.
+      if (typeof row.destroyPermanently === 'function') await row.destroyPermanently();
+      else await row.markAsDeleted();
+    }
+  });
+}
+
 // ─── Family Yjs document (cross-device sync) ─────────────────────────────────
 
 const FAMILY_DOC_ID = '__family__';
 
-function writeRecordToFamilyDoc(record: PlusEntitlement): void {
+function writeRecordToFamilyDoc(record: PlusEntitlement, revokedAt: number | null = null): void {
   const doc = getDoc(FAMILY_DOC_ID);
   doc.transact(() => {
     doc.getMap('entitlements').set(PLUS_PRODUCT_ID, {
@@ -179,8 +218,25 @@ function writeRecordToFamilyDoc(record: PlusEntitlement): void {
       transactionId: record.transactionId,
       purchasedAt: record.purchasedAt,
       expiresAt: record.expiresAt,
+      // A tombstone, not a delete: a family device that comes online later
+      // gets the whole document via Y.applyUpdate, and a value it can read is
+      // reliable where an already-applied deletion fires no observer event.
+      revokedAt,
     });
   });
+}
+
+/** Make sure the family doc's update observer is sending, so a grant or
+ *  revocation reaches the rest of the family. Dynamic import: useSyncStore
+ *  already imports syncManager statically, a static back-import here would
+ *  cycle. */
+async function publishFamilyDoc(): Promise<void> {
+  try {
+    const { syncManager } = await import('../sync/sync-manager');
+    syncManager.registerList(FAMILY_DOC_ID);
+  } catch (err) {
+    console.warn('[entitlements] family doc sync registration failed:', err);
+  }
 }
 
 let familyDocObserverInstalled = false;
@@ -188,7 +244,8 @@ let familyDocObserverInstalled = false;
 /**
  * Watch the family doc's entitlements map so a purchase made on another
  * family device (applied whole-document via Y.applyUpdate in sync-manager)
- * lands here: persisted locally with source 'sync', then resolved.
+ * lands here: persisted locally with source 'sync', then resolved. A
+ * revocation tombstone from the purchasing device removes a synced record.
  */
 function installFamilyDocObserver(): void {
   if (familyDocObserverInstalled) return;
@@ -197,6 +254,16 @@ function installFamilyDocObserver(): void {
   const apply = () => {
     const raw = map.get(PLUS_PRODUCT_ID) as Record<string, unknown> | undefined;
     if (!raw || typeof raw !== 'object') return;
+    const current = useEntitlementStore.getState().record;
+    // This device's own store purchase is verified against the store, never
+    // overridden (or revoked) by what another device published.
+    if (current && ownedByThisStoreAccount(current) && computeIsPlus(current)) return;
+    if (raw.revokedAt != null) {
+      if (current && current.source === 'sync') {
+        void revokeEntitlement('revoked by the purchasing family device', false);
+      }
+      return;
+    }
     const synced: PlusEntitlement = {
       familyId: String(raw.familyId ?? ''),
       productId: String(raw.productId ?? ''),
@@ -207,8 +274,13 @@ function installFamilyDocObserver(): void {
       source: 'sync',
     };
     if (!computeIsPlus(synced)) return;
-    const current = useEntitlementStore.getState().record;
-    if (current && current.transactionId === synced.transactionId) return;
+    if (
+      current &&
+      current.transactionId === synced.transactionId &&
+      current.expiresAt === synced.expiresAt
+    ) {
+      return;
+    }
     persistLocalRecord(synced)
       .then(() => {
         useEntitlementStore.setState({ isPlus: true, record: synced, resolution: 'resolved' });
@@ -249,22 +321,33 @@ export async function resolveEntitlement(): Promise<boolean> {
   return isPlus;
 }
 
-// ─── Grant path (shared by purchase / restore / sync) ────────────────────────
+// ─── Grant / revoke paths (shared by purchase / restore / sync / re-check) ───
 
 async function grantEntitlement(record: PlusEntitlement): Promise<void> {
   await persistLocalRecord(record);
   writeRecordToFamilyDoc(record);
-  // Make sure the family doc's update observer is sending, so the grant
-  // reaches the rest of the family. Dynamic import: useSyncStore already
-  // imports syncManager statically, a static back-import here would cycle.
-  try {
-    const { syncManager } = await import('../sync/sync-manager');
-    syncManager.registerList(FAMILY_DOC_ID);
-  } catch (err) {
-    console.warn('[entitlements] family doc sync registration failed:', err);
-  }
+  await publishFamilyDoc();
   useEntitlementStore.setState({ isPlus: computeIsPlus(record), record, resolution: 'resolved' });
   console.log(`[entitlements] granted via ${record.source} (tx ${record.transactionId})`);
+}
+
+/**
+ * Drop the entitlement on this device. `broadcast` (purchasing device only)
+ * also publishes a tombstone so the rest of the family drops the synced copy.
+ */
+async function revokeEntitlement(reason: string, broadcast: boolean): Promise<void> {
+  const record = useEntitlementStore.getState().record;
+  useEntitlementStore.setState({ isPlus: false, record: null, resolution: 'resolved' });
+  try {
+    await deleteLocalRecord();
+  } catch (err) {
+    console.warn('[entitlements] local record delete failed:', err);
+  }
+  if (broadcast && record) {
+    writeRecordToFamilyDoc(record, Date.now());
+    await publishFamilyDoc();
+  }
+  console.log(`[entitlements] revoked: ${reason}`);
 }
 
 async function currentFamilyId(): Promise<string> {
@@ -326,7 +409,12 @@ async function purchaseToRecord(
     platform: Platform.OS === 'ios' ? 'ios' : 'android',
     transactionId: p.transactionId ?? p.purchaseToken ?? `tx-${Date.now()}`,
     purchasedAt: p.transactionDate ?? Date.now(),
-    expiresAt: null, // stores own renewal; restore re-checks with the store
+    // iOS reports the period end; Google Play reports none to the client
+    // (validity there is "still returned by getAvailablePurchases").
+    expiresAt:
+      typeof p.expirationDateIOS === 'number' && p.expirationDateIOS > 0
+        ? p.expirationDateIOS
+        : null,
     source,
   };
 }
@@ -789,5 +877,133 @@ export async function restorePlus(): Promise<boolean> {
     return false;
   } finally {
     useEntitlementStore.setState({ busy: false });
+  }
+}
+
+// ─── Store re-check (app launch / foreground) ──────────────────────────────────
+// A subscription can lapse, be cancelled, or be refunded long after the grant.
+// The purchasing device re-asks its own store account and revokes ONLY on a
+// definitive "this account owns no active Plus". Offline, a store error, a
+// malformed answer, or a pending payment changes nothing: an honest
+// subscriber must never lose Plus because the network was down.
+
+let verifyInFlight: Promise<StoreVerdict['kind']> | null = null;
+let lastVerifiedAt = 0;
+/** Foreground re-checks closer together than this are skipped. */
+const REVERIFY_MIN_INTERVAL_MS = 5 * 60 * 1000;
+
+async function runStoreVerification(): Promise<StoreVerdict['kind']> {
+  let verdict: StoreVerdict;
+  let iap: typeof import('react-native-iap');
+  try {
+    iap = await import('react-native-iap');
+    await iap.initConnection();
+    verdict = classifyStorePurchases(await iap.getAvailablePurchases());
+  } catch (err: any) {
+    console.warn('[entitlements] store re-check failed (no change):', err?.message ?? err);
+    return 'unknown';
+  }
+  lastVerifiedAt = Date.now();
+
+  const { Platform } = await import('react-native');
+  const record = useEntitlementStore.getState().record;
+
+  switch (verdict.kind) {
+    case 'active': {
+      const p = verdict.purchase;
+      if (p.isAcknowledgedAndroid === false) {
+        await finishPurchase(iap as unknown as IapListenerApi, p);
+      }
+      const fresh = await purchaseToRecord(
+        p,
+        record && ownedByThisStoreAccount(record) ? record.source : 'restore',
+      );
+      // Re-publish only when something changed (renewal, new transaction,
+      // family moved, or nothing held yet): each write is a sync round.
+      const changed =
+        !record ||
+        !ownedByThisStoreAccount(record) ||
+        record.transactionId !== fresh.transactionId ||
+        record.expiresAt !== fresh.expiresAt ||
+        record.familyId !== fresh.familyId;
+      if (changed) await grantEntitlement(fresh);
+      useEntitlementStore.setState({ pendingPayment: false });
+      break;
+    }
+    case 'pending':
+      useEntitlementStore.setState({ pendingPayment: true });
+      break;
+    case 'none':
+      useEntitlementStore.setState({ pendingPayment: false });
+      // Only a record this device's store account owns, on this store.
+      // A family-synced record is the purchaser's to revoke, not ours.
+      if (
+        record &&
+        ownedByThisStoreAccount(record) &&
+        record.platform === (Platform.OS === 'ios' ? 'ios' : 'android')
+      ) {
+        await revokeEntitlement('store reports no active subscription', true);
+      }
+      break;
+    case 'unknown':
+      console.warn(`[entitlements] store re-check inconclusive (no change): ${verdict.reason}`);
+      break;
+  }
+  return verdict.kind;
+}
+
+/**
+ * Re-verify the entitlement with this device's store account. Never throws.
+ * Skipped while a purchase/restore is in flight (its own sheet makes the
+ * store answer transiently incomplete).
+ */
+export async function verifyEntitlementWithStore(): Promise<StoreVerdict['kind']> {
+  if (useEntitlementStore.getState().busy || purchaseWaiter) return 'unknown';
+  if (!verifyInFlight) {
+    verifyInFlight = runStoreVerification()
+      .catch((err) => {
+        console.warn('[entitlements] store re-check aborted (no change):', err);
+        return 'unknown' as const;
+      })
+      .finally(() => {
+        verifyInFlight = null;
+      });
+  }
+  return verifyInFlight;
+}
+
+let lifecycleStarted = false;
+
+/**
+ * App-lifetime store wiring. Call once after resolveEntitlement() during
+ * app init; does not need to be awaited and never throws.
+ *   - installs the purchase listeners (pending payments that complete later,
+ *     iOS transactions re-delivered at launch),
+ *   - re-checks the subscription with the store now and whenever the app
+ *     returns from the background.
+ */
+export async function startEntitlementLifecycle(): Promise<void> {
+  if (lifecycleStarted) return;
+  lifecycleStarted = true;
+  try {
+    const iap = await import('react-native-iap');
+    await iap.initConnection();
+    ensurePurchaseListeners(iap as unknown as IapListenerApi);
+  } catch (err: any) {
+    console.warn('[entitlements] store connection unavailable at launch:', err?.message ?? err);
+  }
+  await verifyEntitlementWithStore();
+  try {
+    const { AppState } = await import('react-native');
+    let previous = AppState.currentState;
+    AppState.addEventListener('change', (next) => {
+      const cameBack = previous === 'background' && next === 'active';
+      previous = next;
+      if (cameBack && Date.now() - lastVerifiedAt >= REVERIFY_MIN_INTERVAL_MS) {
+        void verifyEntitlementWithStore();
+      }
+    });
+  } catch (err) {
+    console.warn('[entitlements] foreground re-check not installed:', err);
   }
 }
