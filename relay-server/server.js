@@ -1888,6 +1888,7 @@ function handleMessage(sender, message) {
       break;
     }
 
+    case 'notification':
     case 'sync_request':
     case 'recovery_request':
     case 'recovery_response': {
@@ -1906,7 +1907,8 @@ function handleMessage(sender, message) {
         sendTo(sender, { type: 'error', message: 'Sync control message requires listId and encrypted payload' });
         return;
       }
-      // The relay forwards opaque control ciphertext only. A completed recovery
+      // The relay forwards opaque control ciphertext only and never stores it;
+      // notifications reach whoever is online right now. A completed recovery
       // snapshot and its nonce are authenticated by family devices inside it.
       // Bind sender identity to enrollment, never to the caller's deviceId.
       for (const client of familyRooms.get(senderInfo.familyId) || []) {
@@ -2216,7 +2218,17 @@ server.listen(RELAY_PORT, () => {
 
 function gracefulShutdown() {
   console.log('[shutdown] Flushing state...');
-  if (_saveTimeout) { clearTimeout(_saveTimeout); persistState(); }
+  // Write synchronously: persistState() only re-arms the 500ms debounce, which
+  // never fires once the process exits, so a just-made enrollment was lost.
+  if (_saveTimeout) {
+    clearTimeout(_saveTimeout);
+    _saveTimeout = null;
+    try {
+      fs.writeFileSync(STATE_FILE, JSON.stringify(serializeState(), null, 2), 'utf-8');
+    } catch (err) {
+      console.warn(`[shutdown] Failed to save state: ${err.message}`);
+    }
+  }
   usedTokensStore.shutdown();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 5000);

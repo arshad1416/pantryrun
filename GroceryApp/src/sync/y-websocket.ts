@@ -269,11 +269,17 @@ export class YjsWebSocketClient {
       if (this.config.relayToken) {
         // Normal flow: authenticate via relay token
         this.authPending = true;
-        // Client-side timeout: if no auth_ack within 10s, disconnect
+        // Client-side timeout: if no auth_ack within 10s, drop this socket and
+        // retry. disconnect() would dispose the client and stop sync until restart.
         const ackTimeout = setTimeout(() => {
-          if (this.authPending) {
+          this._ackTimeout = null;
+          if (this.authPending && current()) {
             this.onError?.(new Error('Authentication timeout: server did not respond within 10s'));
-            this.disconnect();
+            socket.onclose = null;
+            socket.close();
+            this.ws = null;
+            this.setState('disconnected');
+            this.scheduleReconnect();
           }
         }, 10_000);
         this._ackTimeout = ackTimeout;

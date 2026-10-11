@@ -413,19 +413,6 @@ export default function ItemEditScreen({ route, navigation }: Props) {
               </View>
             )}
           </View>
-
-          {/* Receipt scan placeholder */}
-          <TouchableOpacity
-            style={styles.receiptScanBtn}
-            onPress={async () => {
-              Alert.alert(
-                'Receipt Scan',
-                'Receipt scanning is not yet implemented (OCR coming soon).',
-              );
-            }}
-          >
-            <Text style={styles.receiptScanText}>📷 Scan Receipt</Text>
-          </TouchableOpacity>
         </>
       )}
 
@@ -686,21 +673,6 @@ const styles = StyleSheet.create({
   submitPriceBtnText: {
     color: '#fff',
     fontSize: 14,
-    fontWeight: '600',
-  },
-  receiptScanBtn: {
-    margin: 12,
-    marginTop: 0,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 14,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#FF9800',
-  },
-  receiptScanText: {
-    fontSize: 14,
-    color: '#FF9800',
     fontWeight: '600',
   },
 });
