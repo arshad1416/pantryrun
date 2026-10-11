@@ -502,6 +502,20 @@ check('S6: Android backup and device transfer are off, and prebuild reproduces i
   assert.strictEqual(app.$['android:allowBackup'], 'false');
 });
 
+check('S7: one marketing version everywhere (package.json, app.json, native trees)', () => {
+  const pkg = readJson('package.json').version;
+  const app = readJson('app.json').expo.version;
+  const gradle = /versionName\s+"([^"]+)"/.exec(read('android/app/build.gradle'))[1];
+  const plist = /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]*)<\/string>/.exec(
+    read('ios/PantryRun/Info.plist')
+  )[1];
+  assert.deepStrictEqual(
+    { pkg, gradle, plist },
+    { pkg: app, gradle: app, plist: app },
+    `version drift: package.json ${pkg}, app.json ${app}, build.gradle ${gradle}, Info.plist ${plist}`
+  );
+});
+
 pending('S5: hosted association files carry real IDs, not placeholders', () => {
   // site/.well-known/* are the ready-to-host copies for the pantryrun-site Worker.
   // Universal / app links cannot verify until the owner fills these in.
