@@ -59,10 +59,22 @@ export interface SyncCallbacks {
   onRemoteItemsUpdate?: (listId: string, items: GroceryItem[]) => void;
 }
 
+/** Whether a finished transaction added structs or deleted anything. */
+function transactionChanged(tr: Y.Transaction): boolean {
+  if (tr.deleteSet.clients.size > 0) return true;
+  if (tr.afterState.size !== tr.beforeState.size) return true;
+  for (const [client, clock] of tr.afterState) {
+    if (tr.beforeState.get(client) !== clock) return true;
+  }
+  return false;
+}
+
 // ─── Sync Manager ────────────────────────────────────────────────────────────
 
 export class SyncManager {
   private pendingWrites = new Set<Promise<void>>();
+  /** Per list: a queued write that has not started, and the revision it will write. */
+  private queuedPersists = new Map<string, { write: Promise<void>; capture: () => Promise<void> }>();
   private generation = 0;
   private recoveryPending = new Set<string>();
   private corruptSnapshots = new Set<string>();
@@ -75,6 +87,8 @@ export class SyncManager {
   private ready = false;
   private copyTargets = new Set<string>();
   private unpublishedCopyTargets = new Set<string>();
+  /** Lists whose state vector went out at connect; others are new from replay. */
+  private reconciledAtConnect = new Set<string>();
 
   /**
    * Initialise the sync manager.
@@ -127,6 +141,10 @@ export class SyncManager {
     this.wsClient.onSyncRequest = (listId, stateVector) => {
       if (!current()) return;
       this.answerSyncRequest(listId, stateVector);
+    };
+    this.wsClient.onHistoryComplete = () => {
+      if (!current()) return;
+      this.publishSnapshots();
     };
 
     client.onRecoveryRequest = (listId, requestId, senderDeviceId) => {
@@ -187,6 +205,7 @@ export class SyncManager {
       cleanup();
       this.observedDocs.delete(listId);
     }
+    this.wsClient?.forgetList(listId);
     destroyDoc(listId);
   }
 
@@ -242,6 +261,7 @@ export class SyncManager {
    */
   private reconcileAll(): void {
     if (!this.wsClient) return;
+    this.reconciledAtConnect = new Set(getActiveDocIds());
     for (const listId of getActiveDocIds()) {
       if (listId.startsWith('__')) continue;
       if (this.recoveryPending.has(listId)) this.wsClient.requestRecovery(listId);
@@ -250,6 +270,27 @@ export class SyncManager {
         if (this.copyTargets.has(listId)) this.wsClient.sendUpdate(listId, Y.encodeStateAsUpdate(getDoc(listId)));
         this.wsClient.sendStateVector(listId, Y.encodeStateVector(getDoc(listId)));
       }
+    }
+  }
+
+  /**
+   * After the relay's history replay: publish a snapshot of every healthy
+   * list so the relay holds one complete copy (and can drop what it covers),
+   * and ask peers about lists first learned from the replay — reconcileAll
+   * ran before the replay, so it could not have asked about those.
+   */
+  private publishSnapshots(): void {
+    const client = this.wsClient;
+    if (!client) return;
+    for (const listId of getActiveDocIds()) {
+      if (listId.startsWith('__') || !this.observedDocs.has(listId)) continue;
+      if (this.recoveryPending.has(listId) || this.unpublishedCopyTargets.has(listId)) continue;
+      const doc = getDoc(listId);
+      // A doc with unresolved dependencies is missing history; a snapshot of
+      // it would tell the relay to drop entries it has not integrated.
+      if (doc.store.pendingStructs || doc.store.pendingDs || !extractList(listId)) continue;
+      if (!this.reconciledAtConnect.has(listId)) client.sendStateVector(listId, Y.encodeStateVector(doc));
+      if (client.needsSnapshot(listId)) client.sendSnapshot(listId, Y.encodeStateAsUpdate(doc));
     }
   }
 
@@ -310,8 +351,11 @@ export class SyncManager {
     // A newly discovered list must also observe future edits made on this device.
     this.registerList(listId);
     const doc = getDoc(listId);
+    const pendingBefore = [doc.store.pendingStructs?.update, doc.store.pendingDs];
+    let tr = null as Y.Transaction | null;
     // Apply with origin 'remote' so local observers can distinguish
-    Y.transact(doc, () => {
+    Y.transact(doc, (t) => {
+      tr = t;
       Y.applyUpdate(doc, update);
     }, 'remote');
 
@@ -319,6 +363,15 @@ export class SyncManager {
     if (extractList(listId)) {
       getDoc('__lists_index__').getMap('listIds').set(listId, true);
     }
+
+    // Replays and reconnects redeliver updates this doc already holds. Each
+    // used to re-encrypt and rewrite the whole list and every item row; skip
+    // them when nothing changed — no new structs (state vector), no new
+    // deletions (a delete-only update leaves the state vector alone), and no
+    // change to the held-back pending update that the snapshot also carries.
+    const changed = !tr || transactionChanged(tr) ||
+      doc.store.pendingStructs?.update !== pendingBefore[0] || doc.store.pendingDs !== pendingBefore[1];
+    if (!changed) return;
 
     // Notify callbacks
     const items = extractItems(listId);
@@ -337,7 +390,7 @@ export class SyncManager {
    *
    * A bare console.warn here is exactly how the app previously looked fine
    * while saving nothing (see fresh-install-persistence.test.ts). Sentry is
-   * dead in production and error-handler.ts is imported by nothing, so the
+   * dead in production and error-handler.ts only logs to the console, so the
    * only signal a user can see is the sync indicator: set the store's error
    * state, which SyncIndicator renders as a red dot plus the message. The
    * copy says "save", not "sync" — the failure is local persistence, and
@@ -367,6 +420,12 @@ export class SyncManager {
 
   /**
    * Persist current Yjs state for a list to WatermelonDB.
+   *
+   * Writes coalesce per list: while one is queued and has not started, a
+   * later call replaces the revision it will write instead of queuing its
+   * own. A relay replay of hundreds of updates used to queue one full
+   * encrypted snapshot plus a row per item for each of them; now a list has at
+   * most one write running and one waiting, with no delay a quit could lose.
    */
   private async persistListToDB(listId: string): Promise<void> {
     // No key means nothing can be written at all. This used to `return`
@@ -377,7 +436,9 @@ export class SyncManager {
     if (!this.encryptionKey) {
       throw new Error(`no encryption key available; cannot persist list ${listId}`);
     }
-
+    // Capture one immutable revision and key now — the doc may be destroyed
+    // (unregisterList) before the write runs. Its snapshot and all row
+    // projections finish together before a newer revision starts.
     const list = extractList(listId);
     const items = extractItems(listId);
     const snapshot = JSON.stringify({
@@ -385,11 +446,24 @@ export class SyncManager {
       update: Array.from(Y.encodeStateAsUpdate(getDoc(listId))),
       recoveryPending: this.recoveryPending.has(listId),
     });
-    // Capture one immutable revision and key before queuing. Its snapshot and
-    // all row projections finish together before a newer revision starts.
     const key = new Uint8Array(this.encryptionKey);
     const corrupt = this.corruptSnapshots.has(listId);
-    await this.enqueuePersistence(() => this.writeCapturedState(listId, list, items, snapshot, key, corrupt));
+    const capture = () => this.writeCapturedState(listId, list, items, snapshot, key, corrupt);
+
+    const queued = this.queuedPersists.get(listId);
+    if (queued) {
+      queued.capture = capture;
+      return queued.write;
+    }
+    const entry = { write: Promise.resolve(), capture };
+    entry.write = this.enqueuePersistence(() => {
+      if (this.queuedPersists.get(listId) === entry) this.queuedPersists.delete(listId);
+      return entry.capture();
+    });
+    this.queuedPersists.set(listId, entry);
+    try { await entry.write; } finally {
+      if (this.queuedPersists.get(listId) === entry) this.queuedPersists.delete(listId);
+    }
   }
 
   private async writeCapturedState(listId: string, list: GroceryList | null, items: GroceryItem[], snapshot: string, key: Uint8Array, corrupt = false): Promise<void> {

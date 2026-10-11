@@ -242,14 +242,15 @@ export default function GroceryListScreen({ route, navigation }: Props) {
       // via the normal Yjs path), then advance the clock so claim badges and
       // offer expiry update.
       try {
-        yjsSweepExpiredClaims(listId);
+        // The visible items come from the store, not the doc: refresh it.
+        if (yjsSweepExpiredClaims(listId) > 0) loadItems(listId).catch(() => {});
       } catch {
         // Yjs doc not yet hydrated — nothing to sweep
       }
       setClock(Date.now());
     }, 60_000);
     return () => clearInterval(timer);
-  }, [listId]);
+  }, [listId, loadItems]);
 
   useEffect(() => {
     loadItems(listId).catch((err: Error) => {

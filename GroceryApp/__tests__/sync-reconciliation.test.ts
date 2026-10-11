@@ -160,13 +160,15 @@ describe('a state-vector handshake recovers an update evicted from the offline q
     await settle();
     await settle();
 
-    // The 1000 surviving updates all reached the peer, and the peer can use
-    // none of them: Yjs integrates updates causally, so every one of them sits
-    // in the pending set waiting on the clock-0 update that was evicted. One
-    // dropped frame does not cost one edit, it costs the whole list — and
-    // nothing in the protocol ever asks for it again.
-    expect(HubWebSocket.log.filter((m) => m.type === 'update').length)
-      .toBeGreaterThanOrEqual(MAX_QUEUE_SIZE);
+    // The 1000 surviving updates all reached the peer (merged into one frame
+    // per list by the queue flush), and the peer can use none of them: Yjs
+    // integrates updates causally, so every one of them sits in the pending
+    // set waiting on the clock-0 update that was evicted. One dropped frame
+    // does not cost one edit, it costs the whole list — and nothing in the
+    // protocol ever asks for it again.
+    const flushed = HubWebSocket.log.filter((m) => m.type === 'update' && m.deviceId === 'device-a');
+    expect(flushed.length).toBeGreaterThanOrEqual(1);
+    expect(flushed.length).toBeLessThan(MAX_QUEUE_SIZE);
     expect(docB.getMap('recon').size).toBe(0);
 
     // ─── Phase 3: B asks what it missed ───────────────────────────────────

@@ -12,7 +12,7 @@
  *  - Supports key rotation via rotateDeviceKey()
  */
 
-import { initCrypto } from '../crypto/index';
+import { initCrypto, KeyReadError } from '../crypto/index';
 // expo-secure-store loaded lazily to avoid Hermes crash (chains to expo-asset at eval time)
 let SecureStore: any = null;
 async function getSecureStore(): Promise<any> {
@@ -82,9 +82,18 @@ export async function initDeviceIdentity(): Promise<string> {
   await initCrypto();
   console.log('[identity] Checking for stored device keypair…');
 
-  // Check if we already have a keypair stored
-  const storedSecret = await (await getSecureStore()).getItemAsync(DEVICE_SECRET_KEY_ALIAS);
-  const storedPublic = await (await getSecureStore()).getItemAsync(DEVICE_PUBLIC_KEY_ALIAS);
+  // Check if we already have a keypair stored. A read that throws is not
+  // "no keypair": generating one would replace this device's identity (and
+  // its relay enrollment), so it surfaces as a KeyReadError — the startup
+  // error screen offers Retry for it.
+  let storedSecret: string | null;
+  let storedPublic: string | null;
+  try {
+    storedSecret = await (await getSecureStore()).getItemAsync(DEVICE_SECRET_KEY_ALIAS);
+    storedPublic = await (await getSecureStore()).getItemAsync(DEVICE_PUBLIC_KEY_ALIAS);
+  } catch (err) {
+    throw new KeyReadError('secure storage unavailable', err, 'device-identity');
+  }
 
   if (storedSecret && storedPublic) {
     console.log('[identity] Found stored keypair, loading…');

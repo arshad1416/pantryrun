@@ -14,6 +14,7 @@ import { generateUUID } from '../crypto';
 import {
   getDoc,
   extractList,
+  hydrateList,
   yjsUpdateListMeta,
 } from '../sync/yjs-adapter';
 import { syncManager } from '../sync/sync-manager';
@@ -62,7 +63,9 @@ export const useListStore = create<ListState>((set, get) => ({
 
       for (const listId of listIds) {
         const list = extractList(listId);
-        if (list) {
+        // A soft-deleted list keeps its doc (so undo and the tombstone both
+        // sync), and replay or hydration can put it back in the index.
+        if (list && !list.isDeleted) {
           listsMap[list.id] = list;
         }
       }
@@ -169,8 +172,10 @@ export const useListStore = create<ListState>((set, get) => ({
       indexMap.delete(id);
     });
 
-    // 3. Unregister from sync
-    syncManager.unregisterList(id);
+    // 3. Stay registered. The soft-delete is a CRDT change like any other: the
+    // doc (items included) must survive it so the tombstone keeps syncing and
+    // an undo can bring the whole list back. Unregistering here destroyed the
+    // doc, so restoreList wrote into a fresh empty one and the undo was lost.
 
     // 4. Send family notification
     try {
@@ -208,7 +213,14 @@ export const useListStore = create<ListState>((set, get) => ({
       updatedAt: Date.now(),
     };
 
-    // 1. Un-delete via Yjs
+    // 1. Observe first, so the un-delete is published and persisted.
+    syncManager.registerList(list.id);
+    // The doc normally still holds the list (deleteList keeps it). If it is
+    // gone, rebuild the metadata rather than writing flags into an empty doc
+    // that extractList() cannot read.
+    if (!extractList(list.id)) hydrateList(list.id, list, []);
+
+    // 2. Un-delete via Yjs
     yjsUpdateListMeta(list.id, {
       isDeleted: false,
       deletedAt: null,
@@ -216,15 +228,12 @@ export const useListStore = create<ListState>((set, get) => ({
       syncStatus: 'updated',
     });
 
-    // 2. Re-register in the lists index
+    // 3. Re-register in the lists index
     const indexDoc = getDoc('__lists_index__');
     indexDoc.transact(() => {
       const indexMap = indexDoc.getMap('listIds');
       indexMap.set(list.id, true);
     });
-
-    // 3. Re-register for sync
-    syncManager.registerList(list.id);
 
     // 4. Re-add to local state
     set((state) => ({

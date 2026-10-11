@@ -304,18 +304,66 @@ export async function setupMasterKey(passphrase: string): Promise<void> {
 }
 
 /**
+ * The stored master key exists (or may exist) but could not be read: the
+ * keystore threw, or what it returned does not parse.
+ *
+ * Distinct from "not found" on purpose. Both used to come back as null, and
+ * bootstrapSync treats null as a first launch — so a transient Keychain
+ * failure (device still locked after reboot, a keystore hiccup) minted a new
+ * key and recovery phrase over the real one, orphaning every list encrypted
+ * under it. Callers must never provision on this error.
+ */
+export class KeyReadError extends Error {
+  constructor(
+    detail: string,
+    readonly cause?: unknown,
+    readonly subject: 'master-key' | 'device-identity' = 'master-key',
+  ) {
+    super(
+      `The ${subject === 'master-key' ? 'encryption key' : 'device identity'} stored on this ` +
+        `device could not be read (${detail}).`,
+    );
+    this.name = 'KeyReadError';
+  }
+}
+
+/**
+ * Read and parse the stored key envelope. null means nothing is stored;
+ * anything else that goes wrong is a KeyReadError.
+ */
+async function readKeyEnvelope(): Promise<{ key?: unknown; type?: unknown } | null> {
+  let stored: string | null;
+  try {
+    stored = await secureStoreProxy.getItemAsync(SECURE_STORE_KEY_ALIAS);
+  } catch (err) {
+    throw new KeyReadError('secure storage unavailable', err);
+  }
+  if (stored === null || stored === undefined || stored === '') return null;
+  try {
+    const envelope = JSON.parse(stored);
+    if (!envelope || typeof envelope !== 'object') throw new Error('not an object');
+    return envelope;
+  } catch (err) {
+    throw new KeyReadError('stored value is malformed', err);
+  }
+}
+
+/**
  * Retrieve the stored master key. Returns null if not yet set up.
+ * @throws KeyReadError if a key is stored but cannot be read.
  */
 export async function getMasterKey(): Promise<Uint8Array | null> {
   await ensureReady();
+  const envelope = await readKeyEnvelope();
+  if (!envelope) return null;
+  let key: Uint8Array;
   try {
-    const stored = await secureStoreProxy.getItemAsync(SECURE_STORE_KEY_ALIAS);
-    if (!stored) return null;
-    const { key: keyBase64 } = JSON.parse(stored);
-    return base64ToUint8Array(keyBase64);
-  } catch {
-    return null;
+    if (typeof envelope.key !== 'string') throw new Error('missing key');
+    key = base64ToUint8Array(envelope.key);
+  } catch (err) {
+    throw new KeyReadError('stored key is malformed', err);
   }
+  return key;
 }
 
 /**
@@ -373,6 +421,8 @@ export async function verifyAndGetMasterKey(
 
 /**
  * Check if a master key has been set up.
+ * @throws KeyReadError if a key is stored but cannot be read — that is not
+ *   "no key", and treating it as one would let a caller provision over it.
  */
 export async function hasMasterKey(): Promise<boolean> {
   return (await getMasterKey()) !== null;
@@ -509,17 +559,13 @@ export async function setMasterKey(key: Uint8Array): Promise<void> {
  * so an invitee holding one still has to enter the family's recovery phrase.
  *
  * @returns The provenance tag, or null if no key is stored.
+ * @throws KeyReadError if a key is stored but cannot be read.
  */
 export async function getMasterKeyType(): Promise<string | null> {
   await ensureReady();
-  try {
-    const stored = await secureStoreProxy.getItemAsync(SECURE_STORE_KEY_ALIAS);
-    if (!stored) return null;
-    const { type } = JSON.parse(stored);
-    return type ?? null;
-  } catch {
-    return null;
-  }
+  const envelope = await readKeyEnvelope();
+  if (!envelope) return null;
+  return typeof envelope.type === 'string' ? envelope.type : null;
 }
 
 /**

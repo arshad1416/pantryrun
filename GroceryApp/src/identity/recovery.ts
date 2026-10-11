@@ -25,6 +25,7 @@ import {
   hasMasterKey,
   getMasterKeyType,
   getMasterKey,
+  KeyReadError,
 } from '../crypto/index';
 // expo-secure-store loaded lazily to avoid Hermes crash (chains to expo-asset at eval time)
 let SecureStore: any = null;
@@ -729,11 +730,23 @@ export async function recoverFromPhrase(
   // same phrase — which the Settings → Recover path invites, and which the
   // join flow does legitimately — derives the identical key and destroys
   // nothing, so blocking it would be a false alarm on the common case.
-  const existingKey = await getMasterKey();
+  // A stored key that cannot be read is the recovery path out of the
+  // "couldn't read the encryption key" startup screen. Whether it matches is
+  // unknowable, so it counts as a change and needs the explicit confirmation.
+  let existingKey: Uint8Array | null;
+  let existingUnreadable = false;
+  try {
+    existingKey = await getMasterKey();
+  } catch (err) {
+    if (!(err instanceof KeyReadError)) throw err;
+    existingKey = null;
+    existingUnreadable = true;
+  }
   const wouldChangeKey =
-    existingKey !== null &&
-    (existingKey.length !== masterKey.length ||
-      existingKey.some((b, i) => b !== masterKey[i]));
+    existingUnreadable ||
+    (existingKey !== null &&
+      (existingKey.length !== masterKey.length ||
+        existingKey.some((b, i) => b !== masterKey[i])));
 
   // Any key change, not only one over a 'recovery'-tagged key. An earlier
   // version also required existingType === 'recovery', which made the guard
@@ -748,7 +761,14 @@ export async function recoverFromPhrase(
   // excludes re-entering the same phrase, which is the common, harmless case
   // and must not raise a dialog.
   if (wouldChangeKey && !allowOverwrite) {
-    const existingType = await getMasterKeyType();
+    if (existingUnreadable) {
+      throw new RecoveryOverwriteError(
+        "This device's stored key could not be read, so it can't be checked against this " +
+          'phrase. If this is your family\'s phrase, replacing the key restores access to lists ' +
+          'encrypted under it. If it is not, lists saved under the old key stay unreadable.',
+      );
+    }
+    const existingType = await getMasterKeyType().catch(() => null);
     throw new RecoveryOverwriteError(
       existingType === 'recovery'
         ? 'This device already holds a key restored from a recovery phrase. ' +

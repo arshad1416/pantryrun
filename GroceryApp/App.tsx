@@ -103,6 +103,10 @@ function App() {
   const [ready, setReady] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Set when startup stopped because the stored family key could not be read.
+  // Restoring from the recovery phrase is then a way forward besides Retry.
+  const [keyUnreadable, setKeyUnreadable] = useState(false);
+  const [startRoute, setStartRoute] = useState<'Home' | 'Recovery'>('Home');
   const [showErrorDetails, setShowErrorDetails] = useState(false);
   const [Screens, setScreens] = useState<any>(null);
   // Status-bar icons must contrast with the theme: light icons on dark, dark
@@ -110,8 +114,21 @@ function App() {
   const activeTheme = useActiveTheme();
   const statusBarStyle = activeTheme === 'dark' ? 'light' : 'dark';
 
+  const screens = {
+    Home: HomeScreen,
+    GroceryList: GroceryListScreen,
+    ItemEdit: ItemEditScreen,
+    Pairing: PairingScreen,
+    Settings: SettingsScreen,
+    Recovery: RecoveryScreen,
+    Privacy: PrivacyScreen,
+    linkingConfig: linkingConfig,
+  };
+
   const runInit = useCallback(() => {
     setError(null);
+    setKeyUnreadable(false);
+    setStartRoute('Home');
     async function init() {
       try {
         // 1. Init services (crypto, database)
@@ -155,6 +172,9 @@ function App() {
           const mode = await bootstrapSync();
           console.log(`[init] Sync bootstrap: ${mode}`);
         } catch (e) {
+          // An unreadable stored key is not a sync hiccup: carrying on would
+          // show an empty app with sync silently off. Stop on the error screen.
+          if (e instanceof Error && e.name === 'KeyReadError') throw e;
           console.warn('[init] Sync bootstrap failed:', e);
         }
 
@@ -181,19 +201,15 @@ function App() {
           // Sentry init failure is non-fatal
         }
 
-        setScreens({
-          Home: HomeScreen,
-          GroceryList: GroceryListScreen,
-          ItemEdit: ItemEditScreen,
-          Pairing: PairingScreen,
-          Settings: SettingsScreen,
-          Recovery: RecoveryScreen,
-          Privacy: PrivacyScreen,
-          linkingConfig: linkingConfig,
-        });
+        setScreens(screens);
         setReady(true);
       } catch (err) {
         console.error('[init] Failed:', err);
+        setKeyUnreadable(
+          err instanceof Error &&
+            err.name === 'KeyReadError' &&
+            (err as { subject?: string }).subject === 'master-key',
+        );
         setError(err instanceof Error ? err.message : String(err));
       }
     }
@@ -210,8 +226,11 @@ function App() {
         <View style={styles.centered}>
           <Text style={styles.errorTitle}>PantryRun couldn't start</Text>
           <Text style={styles.errorMsg}>
-            Something went wrong while getting things ready. This is usually
-            temporary — please try again.
+            {keyUnreadable
+              ? "Your family's encryption key couldn't be read on this device. " +
+                'Try again in a moment, or restore it with your recovery phrase.'
+              : 'Something went wrong while getting things ready. This is usually ' +
+                'temporary — please try again.'}
           </Text>
           <TouchableOpacity
             style={styles.retryBtn}
@@ -224,6 +243,21 @@ function App() {
           >
             <Text style={styles.retryBtnText}>Retry</Text>
           </TouchableOpacity>
+          {keyUnreadable ? (
+            <TouchableOpacity
+              onPress={() => {
+                setShowErrorDetails(false);
+                setError(null);
+                setStartRoute('Recovery');
+                setScreens(screens);
+                setReady(true);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Restore with recovery phrase"
+            >
+              <Text style={styles.detailsToggle}>Restore with recovery phrase</Text>
+            </TouchableOpacity>
+          ) : null}
           <TouchableOpacity
             onPress={() => setShowErrorDetails((v) => !v)}
             accessibilityRole="button"
@@ -264,6 +298,9 @@ function App() {
           ref={navigationRef}
           linking={Screens.linkingConfig}
           onReady={() => {
+            if (startRoute === 'Recovery') {
+              (navigationRef as any).navigate('Recovery', { mode: 'recover' });
+            }
             // Wire notification taps → navigate to the relevant list.
             import('./src/navigation/useNotificationNavigation')
               .then(({ registerNotificationNavigation }) =>
