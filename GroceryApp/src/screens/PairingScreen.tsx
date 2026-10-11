@@ -118,7 +118,9 @@ export default function PairingScreen({ navigation, route }: Props) {
         const httpBase = code.relayUrl
           .replace(/^ws:/, 'http:')
           .replace(/^wss:/, 'https:');
-        await enrollWithRelay(httpBase, getDeviceId(), JSON.stringify(invite));
+        // Passing the keypair registers this device's signing key with the
+        // relay, so it can invite the next family member itself.
+        await enrollWithRelay(httpBase, getDeviceId(), JSON.stringify(invite), getDeviceKeypair());
         await acceptFamilyInvite(invite, getDeviceKeypair());
 
         const { getMasterKey, getMasterKeyType } = await import('../crypto');

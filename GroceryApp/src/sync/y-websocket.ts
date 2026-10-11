@@ -56,6 +56,15 @@ export interface WebSocketConfig {
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
+/**
+ * What the user sees when the relay no longer accepts this device's token.
+ * Retrying cannot fix it — the token expired (30 days unused) or the relay
+ * forgot the enrollment — so the client stops and says how to recover.
+ */
+export const RELAY_AUTH_REJECTED_MESSAGE =
+  "This device is no longer paired with your family's sync server. Ask a family member " +
+  'for a new invite and pair again (Settings → Pair a device). Your lists are still saved on this device.';
+
 export interface OfflineEntry {
   update: Uint8Array;
   listId: string;
@@ -121,6 +130,8 @@ export class YjsWebSocketClient {
   private ready = false;
   private disposed = false;
   private authPending = true; // true until auth_ack received
+  /** Latched when the relay rejects our relay token; stops reconnecting. */
+  private authRejected = false;
   /** Latched when the relay answers sync_request with "unknown message type". */
   private reconciliationUnsupported = false;
   private storageOperations = new Set<Promise<unknown>>();
@@ -274,7 +285,7 @@ export class YjsWebSocketClient {
    * Connect (or reconnect) to the relay server.
    */
   connect(): void {
-    if (this.disposed) return;
+    if (this.disposed || this.authRejected) return;
     if (this.ws?.readyState === (typeof WebSocket !== 'undefined' ? WebSocket.OPEN : 1) ||
         this.ws?.readyState === (typeof WebSocket !== 'undefined' ? WebSocket.CONNECTING : 0)) {
       return;
@@ -393,6 +404,7 @@ export class YjsWebSocketClient {
 
   private scheduleReconnect(): void {
     if (this.disposed) return; // never reconnect after explicit disconnect
+    if (this.authRejected) return; // the same token will be rejected again
     if (this.reconnectTimer) return; // already scheduled
     const delay = this.reconnectDelay;
     console.log(`YjsWebSocket: reconnecting in ${Math.round(delay)}ms (attempt ${this.reconnectAttempt + 1})`);
@@ -627,6 +639,33 @@ export class YjsWebSocketClient {
     }, retryAfterMs);
   }
 
+  /** Stop for good: the relay will not accept this token again. */
+  private rejectAuth(): void {
+    this.authRejected = true;
+    if (this._ackTimeout) {
+      clearTimeout(this._ackTimeout);
+      this._ackTimeout = null;
+    }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    const socket = this.ws;
+    this.ws = null;
+    if (socket) {
+      socket.onclose = null;
+      socket.close();
+    }
+    this.releaseInFlight();
+    this.setState('error');
+    this.onError?.(new Error(RELAY_AUTH_REJECTED_MESSAGE));
+  }
+
+  /** True once the relay has rejected this device's token (re-pair needed). */
+  isAuthRejected(): boolean {
+    return this.authRejected;
+  }
+
   /** The socket is gone: nothing in flight on it will be acked. */
   private releaseInFlight(): void {
     for (const [msgId, batch] of this.inFlightBatches) {
@@ -750,6 +789,12 @@ export class YjsWebSocketClient {
           // reported: the entries are still queued and still on disk.
           console.warn(`YjsWebSocket: relay refused queued updates (${message}); retrying`);
           this.releaseBatch(data.msgId, typeof data.retryAfterMs === 'number' ? data.retryAfterMs : 30_000);
+          break;
+        }
+        if (/^(Relay token has expired|Invalid relay token)/.test(message)) {
+          // Used to fall through to the 10s auth timeout and reconnect with
+          // the same dead token forever, showing nothing but a red dot.
+          this.rejectAuth();
           break;
         }
         // A relay that predates reconciliation answers sync_request from its

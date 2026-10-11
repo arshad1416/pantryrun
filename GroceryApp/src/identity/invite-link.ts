@@ -79,7 +79,7 @@ export async function createFamilyInviteLink(): Promise<InviteLinkResult> {
     if (!(await getRelayToken())) {
       const selfInvite = await createFamilyInvite(keypair, undefined, invite.familyId);
       const httpBase = relayBase.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
-      await enrollWithRelay(httpBase, deviceId, JSON.stringify(selfInvite));
+      await enrollWithRelay(httpBase, deviceId, JSON.stringify(selfInvite), keypair);
       const { bootstrapSync } = await import('../sync/bootstrap');
       bootstrapSync().catch(() => {});
     }

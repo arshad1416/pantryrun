@@ -130,6 +130,37 @@ export async function createFamilyInvite(
 }
 
 /**
+ * What a joiner signs at relay enrollment to prove it holds the signing key it
+ * registers. Must match enrollmentProofMessage in relay-server/server.js.
+ */
+export function enrollmentProofMessage(familyId: string, nonce: string, deviceToken: string): string {
+  return `pantryrun-enroll-v1:${familyId}:${nonce}:${deviceToken}`;
+}
+
+/**
+ * This device's Ed25519 signing key (the one its own invites are signed
+ * with — see createFamilyInvite) plus a proof of possession for enrolling
+ * with the given invite. The relay registers the key as a family member, which
+ * is what lets this device invite others later; without it only the founding
+ * device's invites were accepted.
+ */
+export async function createEnrollmentSigningProof(
+  keypair: DeviceKeypair,
+  invite: Pick<FamilyInviteToken, 'familyId' | 'nonce'>,
+  deviceToken: string,
+): Promise<{ signingKey: string; signingProof: string }> {
+  await initCrypto();
+  const sodium = require('react-native-libsodium');
+  await sodium.ready;
+  const signKp = sodium.crypto_sign_seed_keypair(keypair.privateKey.slice(0, 32));
+  const proof = sodium.crypto_sign_detached(
+    new TextEncoder().encode(enrollmentProofMessage(invite.familyId, invite.nonce, deviceToken)),
+    signKp.privateKey,
+  );
+  return { signingKey: uint8ArrayToBase64(signKp.publicKey), signingProof: uint8ArrayToBase64(proof) };
+}
+
+/**
  * Verify a family invite token.
  * Checks both the Ed25519 signature and the expiry time.
  *

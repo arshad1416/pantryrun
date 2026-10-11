@@ -646,14 +646,26 @@ const usedInviteSignatures = new Map();
  * key as the founding member; every later enrollment for that familyId
  * requires the invite's signer to be a key already recorded for it.
  *
- * KNOWN CEILING (documented in GOAL_PROMPT_NOTES.md): /enroll only receives
- * the joiner's X25519 box public key (deviceToken), never the joiner's
- * Ed25519 signing key, and the relay cannot derive one from the other. So the
- * registry can only ever hold founding signers — until the client also sends
- * its signing key at enrollment, only the founding device can issue invites
- * this relay will accept.
+ * Joiners are registered too: /enroll accepts the joiner's own Ed25519
+ * signing key (`signingKey`) with a proof of possession (`signingProof`, a
+ * signature over enrollmentProofMessage). The relay cannot derive it from the
+ * X25519 deviceToken, so without this only the founding device could ever
+ * issue an invite this relay accepted. The key is recorded only after the
+ * enrollment itself passed every invite check, so it adds no way in that a
+ * valid invite did not already grant.
  */
 const familyFounderKeys = new Map();
+
+/**
+ * What a joiner signs with its own Ed25519 key at /enroll to prove it holds
+ * the key it asks to register. Bound to the invite's family and nonce (single
+ * use) and to the enrolling deviceToken, so a proof cannot be replayed into
+ * another enrollment. Must match the client's enrollmentProofMessage
+ * (src/identity/family.ts).
+ */
+function enrollmentProofMessage(familyId, nonce, deviceToken) {
+  return `pantryrun-enroll-v1:${familyId}:${nonce}:${deviceToken}`;
+}
 
 // ─── Ed25519 Signature Verification ──────────────────────────────────────────
 
@@ -1045,7 +1057,7 @@ const server = createServer((req, res) => {
 
       try {
         const data = JSON.parse(body);
-        const { deviceToken, familyInviteToken } = data;
+        const { deviceToken, familyInviteToken, signingKey, signingProof } = data;
 
         if (!deviceToken || !familyInviteToken) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1126,6 +1138,18 @@ const server = createServer((req, res) => {
           return;
         }
 
+        // Optional: the joiner's own signing key, so it can invite others later.
+        // Sent with a proof of possession; a key without a valid proof is
+        // refused rather than silently ignored, so a broken client notices.
+        if (signingKey !== undefined || signingProof !== undefined) {
+          if (typeof signingKey !== 'string' || typeof signingProof !== 'string' ||
+              !verifyEd25519Signature(enrollmentProofMessage(familyId, nonce, deviceToken), signingProof, signingKey)) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid signing key proof' }));
+            return;
+          }
+        }
+
         // Replay protection: keyed on the signed per-invite nonce (scoped to
         // the familyId), NOT the raw familyInviteToken string — re-serializing
         // the same JSON (reordered keys, whitespace) must not mint a fresh
@@ -1160,9 +1184,13 @@ const server = createServer((req, res) => {
         // invite's own expiry passes; the hourly sweep evicts it after that.
         usedInviteSignatures.set(inviteReplayKey, expiresAt);
 
-        // Record the founding signer for a previously-unseen familyId.
+        // Record the founding signer for a previously-unseen familyId, and
+        // register the joiner's proven signing key as a member who may invite.
         if (!familyFounderKeys.has(familyId)) {
           familyFounderKeys.set(familyId, new Set([inviterDeviceId]));
+        }
+        if (signingKey) {
+          familyFounderKeys.get(familyId).add(signingKey);
         }
 
         // Generate a relay token (opaque routing token)
