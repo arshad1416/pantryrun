@@ -7,7 +7,7 @@ deployable hardened relay.** grocery-app retired.
 
 | Target | State | What remains |
 |---|---|---|
-| **Relay** | **Ready to deploy** | Nothing in the code. Needs a host + TLS. |
+| **Relay** | **Ready to deploy — and now the app's default** | New installs sync to `wss://relay.pantryrun.app`. Deploy it (Pi + Cloudflare Tunnel): `GroceryApp/docs/deploy-hosted-relay.md`. Until it is live, default installs cannot sync. |
 | **Android** | **Built and signed — awaiting upload** | AAB ready at versionCode 32; needs the Play service-account key or a manual Console upload. |
 | **iOS** | **Code ready; blocked on Apple credentials** | EAS holds no iOS distribution creds — see §4. |
 
@@ -44,7 +44,16 @@ of a boot test, and the exact defect that shipped undetected in the sibling repo
 machine. Run `docker compose up -d` once and confirm `/health`; the CI workflow now does this on
 every push (`.github/workflows/ci.yml`, "Smoke test — the built image actually boots").
 
-**Before exposing it:** terminate TLS in front of it (`docs/self-host-security.md`), and set
+**Hosted default (2026-10-11):** the app now defaults to the PantryRun-operated relay at
+`wss://relay.pantryrun.app` (`docker compose --profile hosted up -d`, Cloudflare Tunnel for TLS —
+`GroceryApp/docs/deploy-hosted-relay.md`). Because the developer now operates the relay, the
+store privacy declarations were re-answered (`GroceryApp/docs/STORE_COMPLIANCE.md` §§1–2) and the
+updated privacy policy, a support page and the app-link association files are ready to host in
+`site/` (`site/README.md`). Still open outside this pass: in-app copy that says sync is
+self-hosted (`PrivacyScreen.tsx` sync/flyer rows, the flyer-scan prompt in
+`GroceryListScreen.tsx`).
+
+**Before exposing a self-hosted relay:** terminate TLS in front of it (`docs/self-host-security.md`), and set
 `ASSISTANT_REDIRECT_URIS` if voice-assistant linking is ever enabled — the OAuth allowlist is
 fail-closed, so an unset value refuses every client, which is the safe default.
 
@@ -203,4 +212,7 @@ unaffected — it does not run inside iCloud.
 3. Provide the Play key (§3b) and the Apple IDs (§3c).
 4. `eas build --profile development --platform ios`, confirm the app reaches its UI (§4).
 5. `eas build --profile production --platform ios` → submit.
-6. Deploy the relay behind TLS; confirm `/health`.
+6. Deploy the hosted relay (`GroceryApp/docs/deploy-hosted-relay.md`); confirm
+   `curl https://relay.pantryrun.app/health`. Do this **before** the store builds reach users —
+   it is their default sync server.
+7. Host `site/` on the pantryrun-site Worker with the real Team ID / SHA-256 (`site/README.md`).
