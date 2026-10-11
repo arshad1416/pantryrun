@@ -75,4 +75,10 @@ describe('screen wiring', () => {
       /if \(yjsSweepExpiredClaims\(listId\) > 0\) loadItems\(listId\)/,
     );
   });
+
+  it("joining with a family invite does not save the inviter's invite as our pairing code", () => {
+    const src = read('src/screens/PairingScreen.tsx');
+    expect(src).not.toMatch(/^\s*pairingCode: tokenStr,?\s*$/m);
+    expect(src).toMatch(/\.\.\.\(invite \? \{\} : \{ pairingCode: tokenStr \}\)/);
+  });
 });

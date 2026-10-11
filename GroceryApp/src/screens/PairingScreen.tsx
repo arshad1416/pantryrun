@@ -93,10 +93,14 @@ export default function PairingScreen({ navigation, route }: Props) {
           return;
         }
 
+        // A family invite is single-use and belongs to the inviter. Saved as
+        // this device's pairingCode, Settings showed it as "Scan to join your
+        // family list", and anyone scanning it was refused as already used.
+        // A legacy bare relay code is reusable, so that one is still kept.
         await updateSettings({
           relayUrl: code.relayUrl,
           relayPort: port,
-          pairingCode: tokenStr,
+          ...(invite ? {} : { pairingCode: tokenStr }),
         });
         setConnectionStatus('connected');
 
