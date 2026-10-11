@@ -41,3 +41,8 @@ regexes = ['''^(?i)(curve25519|ed25519|x25519|xchacha20|chacha20|poly1305|argon2
 description = "AC-17 acceptance test's invite-token fixture — a literal placeholder, not a credential. Also quoted in AUDIT-methodology-and-ground-truth.md."
 targetRules = ["generic-api-key"]
 regexes = ['''^abc123-def456$''']
+
+[[allowlists]]
+description = "RFC 6455 sample Sec-WebSocket-Key (base64 of 'the sample nonce') in the hosted-relay curl check — a published test value, not a credential."
+targetRules = ["generic-api-key"]
+regexes = ['''^dGhlIHNhbXBsZSBub25jZQ==$''']
