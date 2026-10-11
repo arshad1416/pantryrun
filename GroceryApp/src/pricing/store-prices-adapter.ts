@@ -27,7 +27,7 @@ import {
   type Snapshot,
 } from './live-prices';
 
-function userFsa(): string {
+function userFsa(): string | null {
   return normalizeFsa(getSettings().flippFsa);
 }
 

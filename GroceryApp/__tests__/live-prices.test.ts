@@ -124,10 +124,20 @@ describe('1. relay requests', () => {
     expect(requests).toHaveLength(3); // deals + shelf, forced
   });
 
-  it('a bad FSA falls back to Waterdown (L0R)', async () => {
-    mockSettings.flippFsa = 'nonsense';
+  it.each([undefined, '', 'nonsense'])('no usable FSA (%j): nothing fetched, the price banner asks for a postal code', async (fsa) => {
+    mockSettings.flippFsa = fsa;
+    expect(await flippDealsAdapter.getAvailableStores()).toEqual([]);
+    expect(await storePricesAdapter.getPrices(['milk'], 'no-frills')).toEqual(new Map());
+    // Never silently priced as Niagara (L0R) or anywhere else.
+    expect(requests).toHaveLength(0);
+    expect(getLivePriceStatus()).toMatchObject({ state: 'failed', reason: 'region_missing' });
+    expect(getLivePriceStatus().detail).toMatch(/postal code/i);
+  });
+
+  it("uses the user's own FSA", async () => {
+    mockSettings.flippFsa = 'm5v 2h1';
     await flippDealsAdapter.getAvailableStores();
-    expect(requests[0].url).toContain('fsa=L0R');
+    expect(requests[0].url).toContain('fsa=M5V');
   });
 
   it('no relay → unavailable and nothing fetched', async () => {

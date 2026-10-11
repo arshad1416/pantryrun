@@ -87,7 +87,10 @@ export interface Snapshot<T> {
 
 /** How long a loaded region is reused before asking the relay again. */
 export const REFRESH_INTERVAL_MS = 15 * 60 * 1000;
-export const DEFAULT_FSA = 'L0R';
+
+/** Shown in the live-price banner when the user hasn't set a region. */
+export const REGION_MISSING_DETAIL =
+  'Set your postal code (FSA) in Settings → Flipp Deal Matching to see live prices near you.';
 
 export type LivePriceState = 'idle' | 'ok' | 'failed' | 'not_configured';
 export interface LivePriceStatus {
@@ -96,6 +99,8 @@ export interface LivePriceStatus {
   failedAt?: number;
   /** Why, in words safe to show */
   detail?: string;
+  /** Machine-readable cause: no region set, so nothing was fetched. */
+  reason?: 'region_missing';
   /** The last answer was cut at the relay's row cap (partial coverage). */
   truncated?: boolean;
 }
@@ -112,10 +117,20 @@ export function getLivePriceStatus(): LivePriceStatus {
   return status;
 }
 
-/** Normalise a user-entered postal code or FSA to the 3-character FSA. */
-export function normalizeFsa(input: string | undefined | null): string {
+/**
+ * Normalise a user-entered postal code or FSA to the 3-character FSA, or
+ * null when there isn't a valid one. No region is ever assumed: prices from
+ * somewhere else are worse than none.
+ */
+export function normalizeFsa(input: string | undefined | null): string | null {
   const fsa = (input ?? '').replace(/\s+/g, '').slice(0, 3).toUpperCase();
-  return /^[A-Z]\d[A-Z]$/.test(fsa) ? fsa : DEFAULT_FSA;
+  return /^[A-Z]\d[A-Z]$/.test(fsa) ? fsa : null;
+}
+
+/** No region set: fetch nothing and ask for a postal code in the price banner. */
+function regionMissing(): null {
+  status = { state: 'failed', reason: 'region_missing', detail: REGION_MISSING_DETAIL };
+  return null;
 }
 
 async function load<T>(kind: Kind, fsa: string, force: boolean): Promise<Snapshot<T> | null> {
@@ -167,17 +182,19 @@ async function load<T>(kind: Kind, fsa: string, force: boolean): Promise<Snapsho
   return run;
 }
 
-export function loadFlyerDeals(fsa: string, force = false): Promise<Snapshot<FlyerDealRow> | null> {
-  return load<FlyerDealRow>('deals', normalizeFsa(fsa), force);
+export function loadFlyerDeals(fsa: string | undefined | null, force = false): Promise<Snapshot<FlyerDealRow> | null> {
+  const region = normalizeFsa(fsa);
+  return region ? load<FlyerDealRow>('deals', region, force) : Promise.resolve(regionMissing());
 }
 
-export function loadShelfPrices(fsa: string, force = false): Promise<Snapshot<ShelfPriceRow> | null> {
-  return load<ShelfPriceRow>('shelf', normalizeFsa(fsa), force);
+export function loadShelfPrices(fsa: string | undefined | null, force = false): Promise<Snapshot<ShelfPriceRow> | null> {
+  const region = normalizeFsa(fsa);
+  return region ? load<ShelfPriceRow>('shelf', region, force) : Promise.resolve(regionMissing());
 }
 
 /** Re-fetch both feeds from the relay now (the "Refresh Prices" button). */
 export async function refreshLivePrices(fsa: string | undefined | null): Promise<void> {
-  await Promise.all([loadFlyerDeals(fsa ?? '', true), loadShelfPrices(fsa ?? '', true)]);
+  await Promise.all([loadFlyerDeals(fsa, true), loadShelfPrices(fsa, true)]);
 }
 
 /** Test hook. */
