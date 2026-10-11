@@ -51,22 +51,40 @@ async function lookupOpenFoodFacts(barcode: string): Promise<ProductInfo | null>
   }
 }
 
-/** Look up a product via USDA FoodData Central. Free, needs API key. */
+/**
+ * A GTIN/UPC/EAN as comparable digits: the same product is printed as a
+ * 12-digit UPC-A, a 13-digit EAN or a zero-padded 14-digit GTIN, so leading
+ * zeros don't count.
+ */
+export function normalizeGtin(code: unknown): string {
+  return String(code ?? '').replace(/\D/g, '').replace(/^0+/, '');
+}
+
+/**
+ * Look up a product via USDA FoodData Central. Free, needs API key.
+ *
+ * The search endpoint is full-text: a barcode query returns whatever foods
+ * mention those digits anywhere, ranked by relevance — the first hit is
+ * often a different product. Only a branded food whose gtinUpc IS the
+ * scanned code is accepted.
+ */
 async function lookupUSDA(barcode: string): Promise<ProductInfo | null> {
   if (!USDA_API_KEY) return null;
+  const wanted = normalizeGtin(barcode);
+  if (!wanted) return null;
 
   try {
     const res = await fetch(
-      `https://api.nal.usda.gov/fdc/v1/foods/search?query=${encodeURIComponent(barcode)}&api_key=${USDA_API_KEY}`,
+      `https://api.nal.usda.gov/fdc/v1/foods/search?query=${encodeURIComponent(barcode)}&dataType=Branded&api_key=${USDA_API_KEY}`,
       { signal: AbortSignal.timeout(5000) },
     );
     if (!res.ok) return null;
 
     const data = await res.json();
-    if (!data.foods || data.foods.length === 0) return null;
+    if (!Array.isArray(data.foods) || data.foods.length === 0) return null;
 
-    const p = data.foods[0];
-    // USDA returns GTIN/UPC in the foodCode or gtinUpc field
+    const p = data.foods.find((f: { gtinUpc?: unknown }) => normalizeGtin(f?.gtinUpc) === wanted);
+    if (!p) return null;
     return {
       barcode,
       productName: p.description || 'Unknown Product',
