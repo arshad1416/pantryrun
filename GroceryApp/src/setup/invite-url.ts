@@ -9,6 +9,8 @@
 
 export const INVITE_URL_PREFIX = 'groceryapp://invite?token=';
 export const LEGACY_INVITE_URL_PREFIX = 'grocceryapp://invite?token=';
+/** Registered alongside groceryapp:// so links in the new name also open the app. */
+export const PANTRYRUN_INVITE_URL_PREFIX = 'pantryrun://invite?token=';
 
 /**
  * Parse an invite URL from scanned QR data (or a pasted link).
@@ -27,6 +29,9 @@ export function parseInviteUrl(data: string): string | null {
   }
   if (data.startsWith(LEGACY_INVITE_URL_PREFIX)) {
     return decode(data.substring(LEGACY_INVITE_URL_PREFIX.length));
+  }
+  if (data.startsWith(PANTRYRUN_INVITE_URL_PREFIX)) {
+    return decode(data.substring(PANTRYRUN_INVITE_URL_PREFIX.length));
   }
   // Also support https:// variants
   const httpsMatch = data.match(/^https:\/\/[^/]+\/invite\?token=([^&\s]+)/);
