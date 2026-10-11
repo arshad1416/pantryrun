@@ -48,11 +48,10 @@ import { friendlyError } from '../utils/friendlyError';
 import { useThemeStore, useActiveTheme } from '../state/useThemeStore';
 import {
   useEntitlementStore,
-  purchasePlus,
   restorePlus,
   PLUS_PAYWALL_COPY,
-  PLUS_PRICE_DISPLAY,
 } from '../config/entitlements';
+import PlusPaywall, { usePlusPriceLabel, openManageSubscriptions } from '../components/PlusPaywall';
 
 import { themeColors } from '../components/groceryTheme';
 
@@ -231,6 +230,8 @@ export default function SettingsScreen({ navigation }: Props) {
   // PantryRun Plus (entitlement computed solely in src/config/entitlements.ts)
   const isPlus = useEntitlementStore((s) => s.isPlus);
   const plusBusy = useEntitlementStore((s) => s.busy);
+  const plusPriceLabel = usePlusPriceLabel();
+  const [showPlusPaywall, setShowPlusPaywall] = useState(false);
 
   const getRelayHttpUrl = useCallback(() => {
     if (!settings) return '';
@@ -693,29 +694,34 @@ export default function SettingsScreen({ navigation }: Props) {
       <View style={[styles.section, { backgroundColor: theme.cardBg, borderColor: theme.border }]}>
         <Text style={[styles.sectionTitle, { color: theme.text }]}>PantryRun Plus</Text>
         {isPlus ? (
-          <Text style={[styles.sectionDescription, { color: theme.secondaryText }]}>
-            ✨ Plus is active for your family. Trip Optimizer is unlocked on
-            every family device.
-          </Text>
+          <>
+            <Text style={[styles.sectionDescription, { color: theme.secondaryText }]}>
+              ✨ Plus is active for your family. Trip Optimizer is unlocked on
+              every family device.
+            </Text>
+            <TouchableOpacity
+              style={[styles.securityButton, styles.securityButtonSecondary]}
+              onPress={openManageSubscriptions}
+            >
+              <Text style={styles.securityButtonTextSecondary}>
+                Manage Subscription
+              </Text>
+            </TouchableOpacity>
+          </>
         ) : (
           <>
             <Text style={[styles.sectionDescription, { color: theme.secondaryText }]}>
               {PLUS_PAYWALL_COPY}
             </Text>
+            {/* Plus is sold on the PlusPaywall modal: plan, localized price,
+                renewal terms, Terms of Use / Privacy links (Guideline 3.1.2). */}
             <TouchableOpacity
               style={[styles.securityButton, { backgroundColor: theme.primary }, plusBusy && { opacity: 0.5 }]}
               disabled={plusBusy}
-              onPress={() => {
-                purchasePlus().then((ok) => {
-                  if (!ok) {
-                    const err = useEntitlementStore.getState().lastError;
-                    if (err) Alert.alert('Purchase failed', err);
-                  }
-                });
-              }}
+              onPress={() => setShowPlusPaywall(true)}
             >
               <Text style={styles.securityButtonText}>
-                ✨ Subscribe • {PLUS_PRICE_DISPLAY}
+                ✨ Get PantryRun Plus • {plusPriceLabel}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -724,8 +730,15 @@ export default function SettingsScreen({ navigation }: Props) {
               onPress={() => {
                 restorePlus().then((ok) => {
                   if (!ok) {
-                    const err = useEntitlementStore.getState().lastError;
-                    if (err) Alert.alert('Restore failed', err);
+                    const { lastError, pendingPayment } = useEntitlementStore.getState();
+                    if (pendingPayment) {
+                      Alert.alert(
+                        'Payment pending',
+                        'Your PantryRun Plus purchase is waiting for the store to confirm payment. Plus unlocks automatically once it goes through.',
+                      );
+                    } else if (lastError) {
+                      Alert.alert('Restore failed', lastError);
+                    }
                   }
                 });
               }}
@@ -736,6 +749,7 @@ export default function SettingsScreen({ navigation }: Props) {
             </TouchableOpacity>
           </>
         )}
+        <PlusPaywall visible={showPlusPaywall} onClose={() => setShowPlusPaywall(false)} />
       </View>
 
       {/* Security */}

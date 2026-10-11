@@ -1,5 +1,84 @@
 # Monetization Plan (post-v1)
 
+## PantryRun Plus — how the in-app purchase works now (2026-10)
+
+Plus is one auto-renewing annual subscription, `pantryrun_plus_annual`
+(Play base plan `annual`), sold with react-native-iap 15. All entitlement
+logic is in `src/config/entitlements.ts`; paywall copy in
+`src/config/plus-paywall.ts`; the UI is `src/components/PlusPaywall.tsx`.
+
+- **Paywall (Guideline 3.1.2).** Both selling surfaces (Settings › PantryRun
+  Plus and the Trip Optimizer upsell on the list screen) open the same
+  `PlusPaywall` modal: plan name, store-localized price and period
+  (`loadPlusProduct` → `describePlusProduct`; Android reads the bare `annual`
+  base plan, the same one `resolveAndroidOffers` buys), the auto-renewal /
+  24-hour cancellation text, the charged account (Apple ID / Google Play),
+  how to manage or cancel (deep link to the store's subscriptions page),
+  Terms of Use and Privacy Policy links, Subscribe and Restore Purchases.
+  `PLUS_PRICE_DISPLAY` ($14.99/year) is only a placeholder until the store
+  answers.
+- **App-lifetime listener.** `startEntitlementLifecycle()` (called once from
+  `App.tsx` init) installs one `purchaseUpdatedListener` /
+  `purchaseErrorListener` pair for the life of the app. Grants happen only on
+  `purchaseState === 'purchased'`, after `finishTransaction` (which
+  acknowledges on Android). `pending` (Play pending payment) and iOS
+  `deferred-payment` (Ask to Buy) set `pendingPayment` — "payment pending" in
+  the UI, no grant, no error — and are granted when the store later reports
+  completion, even if the paywall was closed long before.
+- **Restore** acknowledges any purchase with `isAcknowledgedAndroid === false`
+  before granting.
+- **Expiry and re-verification.** iOS `expirationDateIOS` is stored as
+  `expiresAt` (Play exposes no expiry to the client; `null`). Expiry is
+  honoured with a 7-day grace (`EXPIRY_GRACE_MS`) so offline subscribers and
+  family devices waiting for a renewal to sync are not locked out. At launch
+  and on background→active (≥ 5 min apart) the purchasing device re-asks
+  `getAvailablePurchases`:
+  - active → acknowledge if needed, refresh expiry/transaction, re-publish;
+  - **definitive "none"** (successful, well-formed answer with no active Plus)
+    for a record this device's store account owns (`source` purchase/restore,
+    same platform) → revoke locally and publish a tombstone (`revokedAt`) to
+    the family doc, which family devices honour for their `sync` copy;
+  - store error, offline, malformed answer, pending → **no change** (fail-open
+    for the honest user).
+- **Family scope.** A `sync` record only entitles while its `familyId`
+  matches the device's current family (re-read at resolve and on foreground;
+  `refreshFamilyScope()` applies it immediately). The buyer's own purchase is
+  not family-scoped.
+- Still honest-user gating: no server-side receipt validation (see the
+  stance in `entitlements.ts`). App Store Server Notifications / Play RTDN
+  would make revocation reach family devices without the purchaser opening
+  the app; not built.
+
+### Store configuration the code cannot do (owner)
+
+App Store Connect:
+- Subscription group (e.g. "PantryRun Plus") containing the auto-renewable
+  subscription `pantryrun_plus_annual`, duration 1 year, price, and a
+  localized display name + description; submit it with the binary.
+- App Information › License Agreement: keep Apple's standard EULA or upload
+  a custom one, AND put a Terms of Use (EULA) link in the App Description
+  (or the custom EULA field) plus the Privacy Policy URL
+  (https://www.pantryrun.app/privacy) — review checks the metadata too.
+- Paid Applications agreement, tax and banking must be active, or products
+  never load (the paywall then stays on the fallback price and purchases
+  fail with "not available").
+- Review notes: a sandbox tester account and where the paywall is
+  (Settings › PantryRun Plus, or a list's Trip Optimizer upsell).
+- Optional: App Store Server Notifications V2 URL (nothing consumes it yet).
+
+Play Console:
+- Payments profile / merchant account.
+- Subscription product `pantryrun_plus_annual` with an ACTIVE base plan whose
+  ID is exactly `annual`, auto-renewing, billing period 1 year
+  (`PLUS_BASE_PLAN_ID`). Offers are optional; the app always buys the bare
+  base plan.
+- Enable/allow pending purchases for subscriptions if wanted (the app handles
+  them); grace period / account hold settings are honoured by the store's
+  answer.
+- License testers for testing; the app must be installed from a Play track.
+- Data safety: purchase history.
+- `https://www.pantryrun.app/terms` and `/privacy` must be live pages.
+
 Decision (owner, 2026-07-06): **v1 ships fully free and self-hosted-only.**
 The managed-tier UI is hidden behind `MANAGED_TIER_ENABLED = false` in
 `SettingsScreen.tsx` because there is no in-app way to buy it, and Apple

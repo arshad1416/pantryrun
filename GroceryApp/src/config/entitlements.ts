@@ -41,7 +41,11 @@ import { getDoc } from '../sync/yjs-adapter';
 // here — the stores are the source of truth for what is charged.
 
 export const PLUS_PRODUCT_ID = 'pantryrun_plus_annual';
-export const PLUS_PRICE_DISPLAY = '$14.99/year';
+// FALLBACK ONLY. The paywall shows the store's localized price and period
+// (loadPlusProduct / describePlusProduct); these render only until the store
+// answers, or if it never does.
+export const PLUS_FALLBACK_PRICE = '$14.99';
+export const PLUS_PRICE_DISPLAY = `${PLUS_FALLBACK_PRICE}/year`;
 
 /**
  * Paywall copy. States precisely what the savings figure compares against:
@@ -52,7 +56,7 @@ export const PLUS_PAYWALL_COPY =
   'PantryRun Plus unlocks the Trip Optimizer: the cheapest way to split ' +
   'your list across nearby stores, with savings shown against doing the ' +
   'whole trip at the cheapest single store. One purchase unlocks your ' +
-  `whole family. ${PLUS_PRICE_DISPLAY}.`;
+  'whole family.';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -87,6 +91,8 @@ export interface EntitlementState {
    * grants when the store later reports the purchase as completed.
    */
   pendingPayment: boolean;
+  /** Store-localized product details for the paywall; null until loaded. */
+  product: PlusProductInfo | null;
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
@@ -98,6 +104,7 @@ export const useEntitlementStore = create<EntitlementState>(() => ({
   busy: false,
   lastError: null,
   pendingPayment: false,
+  product: null,
 }));
 
 /** Synchronous read for non-React callers. Resolve first via resolveEntitlement(). */
@@ -456,8 +463,8 @@ export type GoogleSubscriptionOffer = { sku: string; offerToken: string };
 /**
  * The base plan the paywall price refers to.
  *
- * PLUS_PRICE_DISPLAY above is a hardcoded string rendered onto the Subscribe
- * button, so whatever we buy MUST be this plan. Play returns one entry per
+ * The paywall shows this plan's store price (describePlusProduct reads the
+ * same bare base-plan offer), so whatever we buy MUST be this plan. Play returns one entry per
  * OFFER, not per base plan — add a free trial or intro offer in the Console and
  * the array grows without any repo change. Taking whatever came first would let
  * store ordering decide what the user is charged while the button still
@@ -581,7 +588,7 @@ export async function resolveAndroidOffers(
   );
 
   // Pick the plan the paywall priced, and within it ONLY the bare base plan, so
-  // the charge matches PLUS_PRICE_DISPLAY on the Subscribe button.
+  // the charge matches the price on the paywall's Subscribe button.
   //
   // There is deliberately no `?? forPlan[0]` fallback. Falling back to the
   // first entry is precisely the store-ordering dependence this function
@@ -620,6 +627,110 @@ export async function resolveAndroidOffers(
   }
 
   return [{ sku: PLUS_PRODUCT_ID, offerToken: chosen.offerToken }];
+}
+
+// ─── Store product details (paywall price and period) ─────────────────────────
+// Apple Guideline 3.1.2 requires the paywall to show the price and billing
+// period the store will actually charge, in the buyer's currency. That is
+// only knowable from the store, so the paywall renders from this and treats
+// PLUS_PRICE_DISPLAY as a placeholder while it loads.
+
+export type PlusPeriodUnit = 'day' | 'week' | 'month' | 'year';
+
+export interface PlusProductInfo {
+  /** Store display name of the subscription. */
+  title: string;
+  /** Localized price per period, e.g. "CA$19.99". */
+  displayPrice: string;
+  periodUnit: PlusPeriodUnit;
+  periodCount: number;
+}
+
+/** Parse a Play ISO-8601 billing period ("P1Y", "P6M", "P1W", "P7D"). */
+export function parseBillingPeriod(
+  iso: string | null | undefined,
+): { unit: PlusPeriodUnit; count: number } | null {
+  const m = /^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?$/.exec(iso ?? '');
+  if (!m) return null;
+  const parts: Array<[PlusPeriodUnit, string | undefined]> = [
+    ['year', m[1]],
+    ['month', m[2]],
+    ['week', m[3]],
+    ['day', m[4]],
+  ];
+  const set = parts.filter(([, v]) => v !== undefined && Number(v) > 0);
+  if (set.length !== 1) return null; // mixed periods: do not guess
+  return { unit: set[0][0], count: Number(set[0][1]) };
+}
+
+/**
+ * Turn a fetchProducts({ type: 'subs' }) answer into what the paywall shows.
+ * Pure; exported for testing. Returns null when the answer does not carry a
+ * price AND period for the plan we sell — the caller then keeps the fallback.
+ *
+ * Android reads the bare `PLUS_BASE_PLAN_ID` offer's recurring phase, the
+ * same plan resolveAndroidOffers buys, so the price shown is the price
+ * charged (ProductCommon.displayPrice on Android may describe another offer).
+ */
+export function describePlusProduct(raw: unknown, os: string): PlusProductInfo | null {
+  if (!Array.isArray(raw)) return null;
+  const p = (raw as any[]).find((x) => x?.id === PLUS_PRODUCT_ID);
+  if (!p) return null;
+  const title =
+    (typeof p.displayName === 'string' && p.displayName) ||
+    (typeof p.displayNameIOS === 'string' && p.displayNameIOS) ||
+    (typeof p.nameAndroid === 'string' && p.nameAndroid) ||
+    (typeof p.title === 'string' && p.title) ||
+    'PantryRun Plus';
+
+  if (os === 'ios') {
+    const unit = p.subscriptionPeriodUnitIOS as string | null | undefined;
+    const count = Number(p.subscriptionPeriodNumberIOS ?? 1);
+    if (
+      typeof p.displayPrice !== 'string' ||
+      !p.displayPrice ||
+      !(unit === 'day' || unit === 'week' || unit === 'month' || unit === 'year') ||
+      !(count > 0)
+    ) {
+      return null;
+    }
+    return { title, displayPrice: p.displayPrice, periodUnit: unit, periodCount: count };
+  }
+
+  const offers: any[] = Array.isArray(p.subscriptionOfferDetailsAndroid)
+    ? p.subscriptionOfferDetailsAndroid
+    : [];
+  const base = offers.find(
+    (o) => o?.basePlanId === PLUS_BASE_PLAN_ID && (o?.offerId == null || o?.offerId === ''),
+  );
+  const phases: any[] = base?.pricingPhases?.pricingPhaseList ?? [];
+  // The recurring phase (recurrenceMode 1 = INFINITE_RECURRING) is the
+  // renewal price; a bare base plan normally has exactly that one phase.
+  const phase = phases.find((ph) => ph?.recurrenceMode === 1) ?? phases[phases.length - 1];
+  const period = parseBillingPeriod(phase?.billingPeriod);
+  if (!phase || typeof phase.formattedPrice !== 'string' || !phase.formattedPrice || !period) {
+    return null;
+  }
+  return { title, displayPrice: phase.formattedPrice, periodUnit: period.unit, periodCount: period.count };
+}
+
+/**
+ * Fetch the localized product for the paywall into the store. Never throws;
+ * on any failure the paywall keeps showing the fallback price.
+ */
+export async function loadPlusProduct(): Promise<PlusProductInfo | null> {
+  try {
+    const iap = await import('react-native-iap');
+    await iap.initConnection();
+    const raw = await iap.fetchProducts({ skus: [PLUS_PRODUCT_ID], type: 'subs' });
+    const { Platform } = await import('react-native');
+    const info = describePlusProduct(raw, Platform.OS);
+    if (info) useEntitlementStore.setState({ product: info });
+    return info;
+  } catch (err: any) {
+    console.warn('[entitlements] product lookup failed (showing fallback price):', err?.message ?? err);
+    return null;
+  }
 }
 
 // ─── App-lifetime purchase listener ──────────────────────────────────────────
@@ -1024,6 +1135,8 @@ export async function startEntitlementLifecycle(): Promise<void> {
     console.warn('[entitlements] store connection unavailable at launch:', err?.message ?? err);
   }
   await verifyEntitlementWithStore();
+  // Warm the localized price so upsell buttons show it, not the fallback.
+  if (!useEntitlementStore.getState().isPlus) void loadPlusProduct();
   try {
     const { AppState } = await import('react-native');
     let previous = AppState.currentState;
