@@ -124,12 +124,42 @@ function ownedByThisStoreAccount(record: PlusEntitlement): boolean {
   return record.source === 'purchase' || record.source === 'restore';
 }
 
+/**
+ * The family this device is in, as last read by refreshFamilyScope().
+ * undefined until first read — nothing is enforced on a value never read.
+ */
+let gatingFamilyId: string | undefined;
+
 function computeIsPlus(record: PlusEntitlement | null): boolean {
   if (!record) return false;
   if (record.productId !== PLUS_PRODUCT_ID) return false;
   if (!record.transactionId) return false;
   if (record.expiresAt !== null && record.expiresAt + EXPIRY_GRACE_MS < Date.now()) return false;
+  // "One purchase unlocks the family" — THIS family. A record that reached
+  // this device through the family document stops entitling once the device
+  // leaves (or switches) family. The buyer's own store purchase is theirs
+  // wherever they go; the store re-check governs that one.
+  if (
+    !ownedByThisStoreAccount(record) &&
+    gatingFamilyId !== undefined &&
+    record.familyId !== gatingFamilyId
+  ) {
+    return false;
+  }
   return true;
+}
+
+/** Re-read the current family and recompute the gate against it. Runs at
+ *  resolve and on foreground; call it after leaving/joining a family to apply
+ *  the change immediately. */
+export async function refreshFamilyScope(): Promise<void> {
+  gatingFamilyId = await currentFamilyId();
+  const { record, isPlus } = useEntitlementStore.getState();
+  const next = computeIsPlus(record);
+  if (next !== isPlus) {
+    useEntitlementStore.setState({ isPlus: next });
+    console.log(`[entitlements] family scope changed: ${next ? 'entitled' : 'not entitled'}`);
+  }
 }
 
 // ─── Local table (restart survival) ─────────────────────────────────────────
@@ -305,6 +335,7 @@ function installFamilyDocObserver(): void {
  * Call once during app init, after the database is available.
  */
 export async function resolveEntitlement(): Promise<boolean> {
+  gatingFamilyId = await currentFamilyId();
   let record: PlusEntitlement | null = null;
   try {
     record = await loadLocalRecord();
@@ -999,7 +1030,9 @@ export async function startEntitlementLifecycle(): Promise<void> {
     AppState.addEventListener('change', (next) => {
       const cameBack = previous === 'background' && next === 'active';
       previous = next;
-      if (cameBack && Date.now() - lastVerifiedAt >= REVERIFY_MIN_INTERVAL_MS) {
+      if (!cameBack) return;
+      void refreshFamilyScope().catch(() => {});
+      if (Date.now() - lastVerifiedAt >= REVERIFY_MIN_INTERVAL_MS) {
         void verifyEntitlementWithStore();
       }
     });

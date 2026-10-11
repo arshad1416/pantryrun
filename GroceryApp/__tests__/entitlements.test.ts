@@ -138,6 +138,17 @@ describe('purchase then relaunch (restart survival)', () => {
 // ─── 3. Second family device via the family Yjs document ────────────────────
 
 describe('second family device (CRDT sync path)', () => {
+  // Device B is a member of the family the record was bought for — a synced
+  // record only entitles inside its own family (iap-family-scope.test.ts).
+  beforeEach(async () => {
+    const { leaveFamily } = require('../src/identity/family');
+    await leaveFamily();
+    await require('expo-secure-store').setItemAsync(
+      'groceryapp.family.membership',
+      JSON.stringify({ familyId: 'fam-1', deviceId: 'device-b', joinedAt: 1 }),
+    );
+  });
+
   it('an entitlement record landing in the family doc entitles this device and persists', async () => {
     // Device B starts un-entitled and resolved (observer installed).
     const before = await resolveEntitlement();
