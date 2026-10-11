@@ -16,6 +16,8 @@
 import type { ScannedFlyerPrice, ContributedFlyerPrice } from './flyer-types';
 import { getSettings } from '../config/settings';
 import { getContributionToken, clearContributionTokenCache } from './tokens';
+import { poolStoreId } from './cloud-flyer';
+import { normalizeFsa } from './live-prices';
 
 // ─── Settings Key ────────────────────────────────────────────────────────────
 
@@ -329,19 +331,20 @@ export async function submitContributions(
   prices: ScannedFlyerPrice[],
 ): Promise<void> {
   // Privacy gate: zero network I/O when disabled
-  const { contributeEnabled } = getSettings();
+  const { contributeEnabled, flippFsa } = getSettings();
   if (!contributeEnabled) return;
+
+  // File each price under the same pool store id CloudFlyerAdapter looks up:
+  // the app's store id as the chain, the user's FSA as the region
+  // ("no-frills:M5V"). No region set: nothing could ever look these up, and
+  // a region-less pool id would mix regions, so contribute nothing.
+  const region = normalizeFsa(flippFsa);
+  if (!region) return;
 
   // Transform and buffer
   for (const price of prices) {
-    // Extract chain and region from storeId as a best-effort parse.
-    // The caller should pass these explicitly, but we provide a fallback
-    // that uses the storeId as the chain and "default" as the region.
-    const parts = price.storeId.split('_');
-    const chain = parts[0] || 'unknown';
-    const region = parts.length > 1 ? parts.slice(1).join('_') : 'default';
-
-    const contributed = toContributedPrice(price, chain, region);
+    if (!poolStoreId(price.storeId, region)) continue;
+    const contributed = toContributedPrice(price, price.storeId.trim(), region);
     pendingBuffer.push(contributed);
   }
 
