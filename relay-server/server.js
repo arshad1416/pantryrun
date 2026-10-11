@@ -4,7 +4,8 @@
  * Enhanced relay server with:
  *  - Device enrollment endpoint (POST /enroll)
  *  - Family invite signature verification
- *  - Rate limiting per device token (max 100 messages/min)
+ *  - Rate limiting per device token (100 control messages/min, a separate
+ *    larger budget for Yjs updates)
  *  - WebSocket authentication via relayToken
  *  - Configurable ports via environment variables
  *
@@ -171,6 +172,15 @@ const MAX_CLIENTS_PER_FAMILY = parseInt(process.env.MAX_CLIENTS_PER_FAMILY || '5
 const MAX_FAMILIES = parseInt(process.env.MAX_FAMILIES || '100', 10);
 const MAX_DEVICES_PER_FAMILY = parseInt(process.env.MAX_DEVICES_PER_FAMILY || '20', 10);
 const RATE_LIMIT_MESSAGES = parseInt(process.env.RATE_LIMIT_MESSAGES || '100', 10);
+/**
+ * Separate per-device budget for `update` frames. Updates are the payload the
+ * relay exists to carry, and they arrive in legitimate bursts: a reconnecting
+ * device drains its offline queue, answers peers' sync requests and publishes
+ * a snapshot per list. Sharing the 100/min control budget with them dropped
+ * everything past the 100th frame of a replay — silently, since the dropped
+ * entries had already been deleted from the sender's disk.
+ */
+const RATE_LIMIT_UPDATES = parseInt(process.env.RATE_LIMIT_UPDATES || '1200', 10);
 const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
 const TOKEN_TTL_MS = parseInt(process.env.TOKEN_TTL_MS || '2592000000', 10); // 30 days default
 
@@ -1230,6 +1240,7 @@ const server = createServer((req, res) => {
         maxDevicesPerFamily: MAX_DEVICES_PER_FAMILY,
         maxClientsPerFamily: MAX_CLIENTS_PER_FAMILY,
         rateLimitMessagesPerMin: RATE_LIMIT_MESSAGES,
+        rateLimitUpdatesPerMin: RATE_LIMIT_UPDATES,
         tokenTtlDays: Math.round(TOKEN_TTL_MS / 86400000),
       },
     }));
@@ -1947,20 +1958,29 @@ function handleMessage(sender, message) {
     }
 
     case 'update': {
+      // Clients that need to know whether an update was stored (the offline
+      // queue only deletes its copy on success) tag it with a msgId, echoed
+      // on the ack or error that answers it. Bounded so it cannot be used to
+      // reflect arbitrary payloads back.
+      const msgId = typeof message.msgId === 'string' && message.msgId.length <= 64 ? message.msgId : undefined;
+
       // Check authentication
       if (!sender._relayToken) {
         sendTo(sender, {
           type: 'error',
           message: 'Not authenticated. Send auth message first.',
+          msgId,
         });
         return;
       }
 
-      // Check rate limit
-      if (!checkRateLimit(sender._relayToken)) {
+      // Check rate limit (own budget — see RATE_LIMIT_UPDATES)
+      if (!checkRateLimit(`update:${sender._relayToken}`, RATE_LIMIT_UPDATES)) {
         sendTo(sender, {
           type: 'error',
-          message: 'Rate limit exceeded (max 100 messages/min)',
+          message: `Rate limit exceeded (max ${RATE_LIMIT_UPDATES} updates/min)`,
+          msgId,
+          retryAfterMs: RATE_LIMIT_WINDOW_MS,
         });
         return;
       }
@@ -1971,6 +1991,7 @@ function handleMessage(sender, message) {
         sendTo(sender, {
           type: 'error',
           message: 'update message requires familyId, listId, and payload',
+          msgId,
         });
         return;
       }
@@ -1981,8 +2002,21 @@ function handleMessage(sender, message) {
         sendTo(sender, {
           type: 'error',
           message: 'Not authenticated for this family room',
+          msgId,
         });
         return;
+      }
+
+      // Save update to encrypted-store (100% zero-knowledge persistence).
+      // Stored before it is relayed and acknowledged: an ack is the sender's
+      // licence to forget the update, so it must only follow a durable write.
+      let stored = false;
+      try {
+        const { addUpdate } = require('./encrypted-store');
+        addUpdate(familyId, listId, payload);
+        stored = true;
+      } catch (err) {
+        console.warn(`[ws-update] Failed to save update: ${err.message}`);
       }
 
       // Relay to all OTHER clients in the same family room
@@ -2001,21 +2035,23 @@ function handleMessage(sender, message) {
             relayed++;
           }
         });
-        console.log(`[relay] Device "${deviceId.slice(0, 12)}..." → family "${familyId}" list "${listId}" → ${relayed} peers`);
+        console.log(`[relay] Device "${String(deviceId).slice(0, 12)}..." → family "${familyId}" list "${listId}" → ${relayed} peers`);
       }
 
-      // Save update to encrypted-store (100% zero-knowledge persistence)
-      try {
-        const { addUpdate } = require('./encrypted-store');
-        addUpdate(familyId, listId, payload);
-      } catch (err) {
-        console.warn(`[ws-update] Failed to save update: ${err.message}`);
+      if (stored) {
+        sendTo(sender, {
+          type: 'ack',
+          message: 'Update relayed',
+          msgId,
+        });
+      } else {
+        sendTo(sender, {
+          type: 'error',
+          message: 'Relay could not store this update; it will be retried',
+          msgId,
+          retryAfterMs: 30_000,
+        });
       }
-
-      sendTo(sender, {
-        type: 'ack',
-        message: 'Update relayed',
-      });
       break;
     }
 
@@ -2180,7 +2216,7 @@ server.listen(RELAY_PORT, () => {
   Stats:     ${httpProtocol}://localhost:${RELAY_PORT}/stats
   Enroll:    POST ${httpProtocol}://localhost:${RELAY_PORT}/enroll  { deviceToken, familyInviteToken }
 
-  Rate limit:       ${RATE_LIMIT_MESSAGES} messages/min per device
+  Rate limit:       ${RATE_LIMIT_MESSAGES} messages/min, ${RATE_LIMIT_UPDATES} updates/min per device
   Max families:     ${MAX_FAMILIES}
   Max devices/family: ${MAX_DEVICES_PER_FAMILY}
   Max clients/family: ${MAX_CLIENTS_PER_FAMILY}
