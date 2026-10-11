@@ -74,6 +74,13 @@ export interface EntitlementState {
   resolution: 'unresolved' | 'resolved';
   busy: boolean;
   lastError: string | null;
+  /**
+   * A Plus purchase exists but the store has not taken the money yet
+   * (Google Play pending payment, iOS Ask to Buy). NOT a grant and NOT an
+   * error: the paywall says "payment pending" and the app-lifetime listener
+   * grants when the store later reports the purchase as completed.
+   */
+  pendingPayment: boolean;
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
@@ -84,6 +91,7 @@ export const useEntitlementStore = create<EntitlementState>(() => ({
   resolution: 'unresolved',
   busy: false,
   lastError: null,
+  pendingPayment: false,
 }));
 
 /** Synchronous read for non-React callers. Resolve first via resolveEntitlement(). */
@@ -274,13 +282,32 @@ async function currentFamilyId(): Promise<string> {
 // v15 is event-based: requestPurchase() dispatches the flow and the result
 // arrives through purchaseUpdatedListener / purchaseErrorListener.
 
+// The subset of react-native-iap 15's `Purchase` (types.ts PurchaseCommon /
+// PurchaseIOS / PurchaseAndroid) that this module reads. Every field is
+// optional here because events and restores arrive from the native bridge and
+// we would rather refuse a grant than crash on a missing field.
 type IapPurchase = {
   productId?: string;
+  ids?: string[] | null;
   transactionId?: string | null;
   /** Unified purchase token (iOS JWS, Android purchaseToken). */
   purchaseToken?: string | null;
   transactionDate?: number;
+  /** 'pending' | 'purchased' | 'unknown'. Only 'purchased' may grant. */
+  purchaseState?: 'pending' | 'purchased' | 'unknown' | string;
+  /** Android: false until finishTransaction acknowledges it. Play refunds
+   *  unacknowledged purchases after ~3 days. */
+  isAcknowledgedAndroid?: boolean | null;
+  /** Android (Billing 8.1+): payment failed; must not entitle. */
+  isSuspendedAndroid?: boolean | null;
+  /** iOS: subscription expiry, ms since epoch. */
+  expirationDateIOS?: number | null;
+  /** iOS: set when Apple refunded/revoked the transaction. */
+  revocationDateIOS?: number | null;
 };
+
+/** How a purchase event or restore settled, for the caller that started it. */
+export type PurchaseOutcome = 'granted' | 'pending';
 
 function receiptPresent(p: IapPurchase): boolean {
   // Purchase-time receipt check: a store purchase must carry a signed store
@@ -476,15 +503,200 @@ export async function resolveAndroidOffers(
   return [{ sku: PLUS_PRODUCT_ID, offerToken: chosen.offerToken }];
 }
 
+// ─── App-lifetime purchase listener ──────────────────────────────────────────
+// Store events are NOT tied to the purchase sheet. A Play "pending" payment
+// (cash at a kiosk, bank transfer) completes hours later; an iOS Ask to Buy
+// approval arrives whenever the parent taps Approve; an unfinished StoreKit
+// transaction is re-delivered on the next launch. If listeners exist only
+// while purchasePlus() is awaiting, all of those land with nobody listening:
+// the buyer is charged, never unlocked, and — on Android — never acknowledged,
+// so Play auto-refunds after ~3 days. So the listeners are installed once, for
+// the life of the app, and every Plus event goes through handlePurchaseUpdate.
+
+type IapListenerApi = {
+  purchaseUpdatedListener: (fn: (p: any) => void) => { remove: () => void };
+  purchaseErrorListener: (fn: (e: any) => void) => { remove: () => void };
+  finishTransaction: (args: { purchase: any; isConsumable?: boolean }) => Promise<unknown>;
+};
+
+/** The purchasePlus() call currently waiting on the store, if any. */
+let purchaseWaiter: {
+  resolve: (outcome: PurchaseOutcome) => void;
+  reject: (err: Error) => void;
+} | null = null;
+
+let purchaseListenersInstalled = false;
+
+// Store events emitted while no JS listener was attached are buffered
+// natively and flushed to the first listener that attaches, so an event is
+// not necessarily the one just requested.
+//
+// The predicate is deliberately asymmetric: skip only events that name a
+// DIFFERENT product. An event carrying no identity at all is attributed to an
+// in-flight purchasePlus() — PurchaseError.productId is optional and nullable
+// (types.ts PurchaseError), which is precisely the shape a user cancellation
+// arrives in, and ignoring it would leave `busy: true` stuck forever.
+function eventProductIds(x: any): string[] {
+  return [x?.productId, ...(x?.ids ?? []), ...(x?.productIds ?? [])].filter(
+    (v): v is string => typeof v === 'string' && v.length > 0,
+  );
+}
+function isSomeoneElses(x: any): boolean {
+  const n = eventProductIds(x);
+  return n.length > 0 && !n.includes(PLUS_PRODUCT_ID);
+}
+
+function settleWaiter(outcome: PurchaseOutcome): void {
+  const w = purchaseWaiter;
+  purchaseWaiter = null;
+  w?.resolve(outcome);
+}
+function failWaiter(err: Error): void {
+  const w = purchaseWaiter;
+  purchaseWaiter = null;
+  w?.reject(err);
+}
+
+/** Acknowledge (Android) / finish (iOS) a completed purchase. A failure is
+ *  logged, not fatal: the buyer has paid, so they are still granted, and the
+ *  launch-time store check retries any purchase still unacknowledged. */
+async function finishPurchase(
+  iap: Pick<IapListenerApi, 'finishTransaction'>,
+  p: IapPurchase,
+): Promise<void> {
+  try {
+    await iap.finishTransaction({ purchase: p as any, isConsumable: false });
+  } catch (err) {
+    console.warn('[entitlements] finishTransaction failed (retried on next launch):', err);
+  }
+}
+
+/**
+ * Handle one purchaseUpdatedListener event. Grants ONLY on purchaseState
+ * 'purchased'; 'pending' is reported as payment pending (no grant, no error,
+ * nothing finished — Play cannot acknowledge a pending purchase).
+ *
+ * Exported for testing; the app-lifetime listener is the production caller.
+ */
+export async function handlePurchaseUpdate(
+  iap: Pick<IapListenerApi, 'finishTransaction'>,
+  p: IapPurchase,
+): Promise<PurchaseOutcome | 'ignored'> {
+  if (isSomeoneElses(p)) return 'ignored';
+  // An identity-less event with nobody waiting cannot be attributed to Plus.
+  if (eventProductIds(p).length === 0 && !purchaseWaiter) return 'ignored';
+  try {
+    if (p.purchaseState === 'pending') {
+      useEntitlementStore.setState({ pendingPayment: true });
+      console.log('[entitlements] Plus purchase is pending payment — not granted yet');
+      settleWaiter('pending');
+      return 'pending';
+    }
+    if (p.purchaseState !== 'purchased') {
+      console.warn(`[entitlements] Plus purchase in state "${p.purchaseState}" — not granting`);
+      failWaiter(new Error('The store could not confirm this purchase yet. Please try again shortly.'));
+      return 'ignored';
+    }
+    if (!receiptPresent(p)) {
+      failWaiter(new Error('Purchase did not return a store receipt — not granting.'));
+      return 'ignored';
+    }
+    await finishPurchase(iap, p);
+    await grantEntitlement(await purchaseToRecord(p, 'purchase'));
+    useEntitlementStore.setState({ pendingPayment: false });
+    settleWaiter('granted');
+    return 'granted';
+  } catch (err: any) {
+    console.warn('[entitlements] purchase update handling failed:', err?.message ?? err);
+    failWaiter(err instanceof Error ? err : new Error(String(err)));
+    return 'ignored';
+  }
+}
+
+/** Handle one purchaseErrorListener event. Exported for testing. */
+export function handlePurchaseError(e: any): void {
+  if (isSomeoneElses(e)) return;
+  // iOS Ask to Buy / deferred payments surface as an error code, but they are
+  // the iOS twin of Play's pending state: not a failure, not a grant.
+  if (e?.code === 'deferred-payment' || e?.code === 'pending') {
+    useEntitlementStore.setState({ pendingPayment: true });
+    settleWaiter('pending');
+    return;
+  }
+  if (!purchaseWaiter) {
+    console.warn('[entitlements] store error with no purchase in flight:', e?.message ?? e?.code);
+    return;
+  }
+  const err = new Error(e?.message ?? e?.code ?? 'purchase failed') as Error & { code?: string };
+  err.code = e?.code;
+  failWaiter(err);
+}
+
+/** Install the app-lifetime purchase listeners. Idempotent. */
+function ensurePurchaseListeners(iap: IapListenerApi): void {
+  if (purchaseListenersInstalled) return;
+  purchaseListenersInstalled = true;
+  iap.purchaseUpdatedListener((p: any) => {
+    void handlePurchaseUpdate(iap, p as IapPurchase);
+  });
+  iap.purchaseErrorListener((e: any) => handlePurchaseError(e));
+}
+
+// ─── Store verdict (restore / launch re-check) ────────────────────────────────
+
+export type StoreVerdict =
+  | { kind: 'active'; purchase: IapPurchase }
+  /** The store has a Plus purchase awaiting payment, and no completed one. */
+  | { kind: 'pending' }
+  /** The store answered and this account owns no active Plus. */
+  | { kind: 'none' }
+  /** The answer is not trustworthy enough to act on. Never revoke on this. */
+  | { kind: 'unknown'; reason: string };
+
+/**
+ * Classify a getAvailablePurchases() result for Plus. Pure; exported for
+ * testing. Only a well-formed array with no Plus purchase in it is 'none' —
+ * anything ambiguous is 'unknown', because 'none' is what revokes.
+ */
+export function classifyStorePurchases(raw: unknown, now: number = Date.now()): StoreVerdict {
+  if (!Array.isArray(raw)) return { kind: 'unknown', reason: 'store returned a non-array' };
+  const plus = (raw as IapPurchase[]).filter((p) => p?.productId === PLUS_PRODUCT_ID);
+  const active = plus
+    .filter(
+      (p) =>
+        p.purchaseState === 'purchased' &&
+        receiptPresent(p) &&
+        p.isSuspendedAndroid !== true &&
+        p.revocationDateIOS == null &&
+        !(typeof p.expirationDateIOS === 'number' && p.expirationDateIOS < now),
+    )
+    .sort(
+      (a, b) =>
+        (b.expirationDateIOS ?? b.transactionDate ?? 0) -
+        (a.expirationDateIOS ?? a.transactionDate ?? 0),
+    );
+  if (active.length > 0) return { kind: 'active', purchase: active[0] };
+  if (plus.some((p) => p.purchaseState === 'pending')) return { kind: 'pending' };
+  // A Plus entry in a state we cannot read is not proof of absence.
+  if (plus.some((p) => p.purchaseState !== 'purchased')) {
+    return { kind: 'unknown', reason: 'Plus purchase in an unrecognised state' };
+  }
+  return { kind: 'none' };
+}
+
+// ─── Purchase / restore ───────────────────────────────────────────────────────
+
 /**
  * Buy PantryRun Plus on this device's store account, then unlock the family.
- * Returns true when the entitlement was granted.
+ * Returns true when the entitlement was granted. A pending payment returns
+ * false with `pendingPayment: true` and no `lastError`.
  */
 export async function purchasePlus(): Promise<boolean> {
   useEntitlementStore.setState({ busy: true, lastError: null });
   try {
     const iap = await import('react-native-iap');
     await iap.initConnection();
+    ensurePurchaseListeners(iap as unknown as IapListenerApi);
 
     // Google Play Billing v5+ requires a REAL offer token, obtained from the
     // store for the specific base plan being bought. This used to pass the
@@ -496,46 +708,10 @@ export async function purchasePlus(): Promise<boolean> {
     // iOS ignores subscriptionOffers entirely and keys off `apple.sku`.
     const googleOffers = await resolveAndroidOffers(iap);
 
-    // Store events emitted while no JS listener was attached are buffered
-    // natively and flushed to the first listener that attaches, so the first
-    // event seen here is not necessarily the one just requested.
-    //
-    // On the SUCCESS side, acting on a stranger's event finishes the wrong
-    // transaction, grants a record whose productId fails computeIsPlus, and
-    // still returns true — a silent no-unlock — while the real purchase lands
-    // after both listeners are gone, never gets finishTransaction, and Play
-    // auto-refunds it in ~3 days. On the ERROR side the same flush rejects the
-    // real purchase, with the identical never-finished consequence.
-    //
-    // The predicate is deliberately asymmetric: skip only events that name a
-    // DIFFERENT product. An event carrying no identity at all settles the
-    // promise exactly as it did before. A strict `!== PLUS_PRODUCT_ID` would
-    // hang forever on one — and PurchaseError.productId is optional and
-    // nullable (types.d.ts:1319-1320), which is precisely the shape a user
-    // cancellation arrives in. Hanging leaves `busy: true` stuck with no alert
-    // and no way out but an app restart.
-    const names = (x: any): string[] =>
-      [x?.productId, ...(x?.ids ?? []), ...(x?.productIds ?? [])].filter(
-        (v): v is string => typeof v === 'string' && v.length > 0,
-      );
-    const isSomeoneElses = (x: any) => {
-      const n = names(x);
-      return n.length > 0 && !n.includes(PLUS_PRODUCT_ID);
-    };
-
-    const purchase = await new Promise<IapPurchase>((resolve, reject) => {
-      const okSub = iap.purchaseUpdatedListener((p: any) => {
-        if (isSomeoneElses(p)) return;
-        okSub.remove();
-        errSub.remove();
-        resolve(p as IapPurchase);
-      });
-      const errSub = iap.purchaseErrorListener((e: any) => {
-        if (isSomeoneElses(e)) return;
-        okSub.remove();
-        errSub.remove();
-        reject(new Error(e?.message ?? e?.code ?? 'purchase failed'));
-      });
+    // The result arrives through the app-lifetime listener, which finishes /
+    // acknowledges and grants; this call only waits for it to settle.
+    const outcome = await new Promise<PurchaseOutcome>((resolve, reject) => {
+      purchaseWaiter = { resolve, reject };
       iap
         .requestPurchase({
           request: {
@@ -548,28 +724,22 @@ export async function purchasePlus(): Promise<boolean> {
           type: 'subs',
         })
         .catch((e: unknown) => {
-          okSub.remove();
-          errSub.remove();
+          if (purchaseWaiter?.resolve === resolve) purchaseWaiter = null;
           reject(e instanceof Error ? e : new Error(String(e)));
         });
     });
 
-    if (!receiptPresent(purchase)) {
-      throw new Error('Purchase did not return a store receipt — not granting.');
-    }
-    await iap.finishTransaction({ purchase: purchase as any, isConsumable: false });
-    await grantEntitlement(await purchaseToRecord(purchase, 'purchase'));
-    return true;
+    return outcome === 'granted';
   } catch (err: any) {
     const message = err?.message ?? String(err);
     // User cancellation is not an error state worth surfacing loudly.
-    const cancelled = /cancel/i.test(message);
+    const cancelled = err?.code === 'user-cancelled' || /cancel/i.test(message);
     // `lastError` is rendered straight into Alert.alert('Purchase failed', …) by
-    // GroceryListScreen:126/137 and SettingsScreen:711/727, so it has to read as
-    // something a buyer can act on. Store-configuration failures carry a
-    // separate userMessage; the operator detail stays in the log, where it is
-    // actually useful. Telling a customer to "activate a base plan in Play
-    // Console" is a support ticket, not an error message.
+    // the paywall, so it has to read as something a buyer can act on.
+    // Store-configuration failures carry a separate userMessage; the operator
+    // detail stays in the log, where it is actually useful. Telling a customer
+    // to "activate a base plan in Play Console" is a support ticket, not an
+    // error message.
     const shown =
       err instanceof PurchaseUnavailableError ? err.userMessage : message;
     useEntitlementStore.setState({ lastError: cancelled ? null : shown });
@@ -589,15 +759,22 @@ export async function restorePlus(): Promise<boolean> {
   try {
     const iap = await import('react-native-iap');
     await iap.initConnection();
-    const purchases = (await iap.getAvailablePurchases()) as unknown as IapPurchase[];
-    const match = purchases.find(
-      (p) => p.productId === PLUS_PRODUCT_ID && receiptPresent(p),
-    );
-    if (!match) {
+    const verdict = classifyStorePurchases(await iap.getAvailablePurchases());
+    if (verdict.kind === 'pending') {
+      useEntitlementStore.setState({ pendingPayment: true });
+      return false;
+    }
+    if (verdict.kind !== 'active') {
       useEntitlementStore.setState({ lastError: 'No previous purchase found on this store account.' });
       return false;
     }
-    await grantEntitlement(await purchaseToRecord(match, 'restore'));
+    // A purchase made while the app was not listening (or whose ack failed)
+    // is still unacknowledged; acknowledge before granting or Play refunds it.
+    if (verdict.purchase.isAcknowledgedAndroid === false) {
+      await finishPurchase(iap as unknown as IapListenerApi, verdict.purchase);
+    }
+    await grantEntitlement(await purchaseToRecord(verdict.purchase, 'restore'));
+    useEntitlementStore.setState({ pendingPayment: false });
     return true;
   } catch (err: any) {
     const message = err?.message ?? String(err);
