@@ -27,6 +27,7 @@ import type { RootStackParamList } from '../navigation/deepLinks';
 import { usePriceStore } from '../pricing/price-store';
 import { useListStore } from '../state/useListStore';
 import { crowdsourcedAdapter } from '../pricing/crowdsourced';
+import { storeIdFromName } from '../pricing/live-prices';
 
 // ─── Props ──────────────────────────────────────────────────────────────────
 
@@ -392,8 +393,8 @@ export default function ItemEditScreen({ route, navigation }: Props) {
                     try {
                       await submitCrowdPrice({
                         itemName: existingItem.name,
-                        storeId: priceStoreInput.toLowerCase().replace(/\s+/g, '_'),
-                        storeName: priceStoreInput,
+                        storeId: storeIdFromName(priceStoreInput),
+                        storeName: priceStoreInput.trim(),
                         price,
                         unit: existingItem.unit,
                         quantity: existingItem.quantity,

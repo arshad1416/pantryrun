@@ -28,6 +28,8 @@ import type { PriceResult, SubmittedPrice } from './types';
 import type { Offers } from './basket';
 import { priceRegistry } from './registry';
 import { crowdsourcedAdapter } from './crowdsourced';
+import { flyerScanAdapter } from './flyer-scan';
+import { clearLocalPriceRecords } from './local-price-records';
 
 // ─── State Shape ────────────────────────────────────────────────────────────
 
@@ -70,6 +72,11 @@ export interface PriceState {
   ) => Promise<void>;
   getItemPrice: (itemId: string) => PriceResult | null;
   getStoreIdsWithPrices: () => string[];
+  /**
+   * Clear loaded prices and the prices this device recorded itself (crowd
+   * submissions, flyer scans), in memory and on disk. Used by "Clear Local
+   * Prices" and "Delete All Data".
+   */
   clearPrices: () => void;
   clearPerStorePrices: () => void;
   clearError: () => void;
@@ -330,6 +337,10 @@ export const usePriceStore = create<PriceState>((set, get) => ({
 
   clearPrices: () => {
     set({ prices: {}, error: null, priceTimestamps: {} });
+    crowdsourcedAdapter.clearAllPrices?.();
+    flyerScanAdapter.clearAllPrices?.();
+    void clearLocalPriceRecords().catch((err) =>
+      console.warn('[prices] failed to clear local price records:', err instanceof Error ? err.message : err));
   },
 
   clearPerStorePrices: () => {
