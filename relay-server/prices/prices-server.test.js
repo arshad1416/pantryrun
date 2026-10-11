@@ -193,7 +193,7 @@ describe('handlePricesRequest', () => {
     const [sql, args] = reader.query.mock.calls[0];
     expect(sql).toContain('FROM flipp_deals');
     expect(sql).not.toContain('L0R');
-    expect(args).toEqual(['L0R%']);
+    expect(args).toEqual(['L0R', 'L0S']);
     expect(res.body.fsa).toBe('L0R');
     expect(res.body.rows).toEqual([
       { merchant: 'No Frills', name: 'Green Seedless Grapes', price: '2.99', price_real: 2.99, image_url: null, valid_from: '2026-10-02', valid_to: '2026-10-08T23:59:59-04:00' },
@@ -361,7 +361,7 @@ describe('relay /api/prices end to end (fake Turso)', () => {
     for (const c of dataCalls) {
       expect(c.url).toBe('/v2/pipeline');
       expect(c.auth).toBe(`Bearer ${READ_TOKEN}`);
-      expect(c.body.requests[0].stmt.args).toEqual([{ type: 'text', value: 'L0R%' }]);
+      expect(c.body.requests[0].stmt.args).toEqual([{ type: 'text', value: 'L0R' }, { type: 'text', value: 'L0S' }]);
     }
   });
 
@@ -388,7 +388,7 @@ try {
 }
 
 (sqlite ? describe : describe.skip)('price queries (SQLite)', () => {
-  const { sqlFor, MAX_ROWS } = jest.requireActual('./prices-server');
+  const { sqlFor, fsaRange, MAX_ROWS } = jest.requireActual('./prices-server');
   let db;
 
   beforeEach(() => {
@@ -420,7 +420,7 @@ try {
     addShelf('nofrills', 'Milk 4 L', 4.49, 5, 'L0R1A1'); // older, cheaper, another postal code
     addShelf('nofrills', 'Milk 4 L', 5.99, 1, 'L0R2H4');
     addShelf('nofrills', 'Bread', 2.99, 2);
-    const rows = db.prepare(sqlFor('shelf', MAX_ROWS + 1)).all('L0R%');
+    const rows = db.prepare(sqlFor('shelf', MAX_ROWS + 1)).all('L0R', 'L0S');
     expect(rows.map((r) => [r.name, r.price_real])).toEqual(expect.arrayContaining([['Milk 4 L', 5.99], ['Bread', 2.99]]));
     expect(rows).toHaveLength(2);
   });
@@ -430,7 +430,7 @@ try {
       addShelf('loblaws', `Item ${i}`, 1 + i, 1);
       addShelf('superstore', `Item ${i}`, 1 + i, 1);
     }
-    const rows = db.prepare(sqlFor('shelf', 6)).all('L0R%');
+    const rows = db.prepare(sqlFor('shelf', 6)).all('L0R', 'L0S');
     const perStore = rows.reduce((m, r) => ({ ...m, [r.store_id]: (m[r.store_id] || 0) + 1 }), {});
     expect(perStore).toEqual({ loblaws: 3, superstore: 3 });
   });
@@ -442,10 +442,38 @@ try {
       addDeal('Food Basics', `Deal ${i}`, 1 + i);
       addDeal('Zehrs', `Deal ${i}`, 1 + i);
     }
-    const all = db.prepare(sqlFor('deals', MAX_ROWS + 1)).all('L0R%');
+    const all = db.prepare(sqlFor('deals', MAX_ROWS + 1)).all('L0R', 'L0S');
     expect(all.filter((r) => r.name === 'Grapes')).toHaveLength(1);
-    const capped = db.prepare(sqlFor('deals', 6)).all('L0R%');
+    const capped = db.prepare(sqlFor('deals', 6)).all('L0R', 'L0S');
     expect(capped.filter((r) => r.merchant === 'Zehrs')).toHaveLength(3);
+  });
+
+  test('range bounds keep neighbouring FSAs out', () => {
+    addShelf('nofrills', 'Milk 4 L', 5.99, 1, 'L0R2H4');
+    addShelf('nofrills', 'Eggs', 3.99, 1, 'L0S1A1');
+    addShelf('nofrills', 'Rice', 9.99, 1, 'L0Q9Z9');
+    const rows = db.prepare(sqlFor('shelf', MAX_ROWS + 1)).all(...fsaRange('L0R'));
+    expect(rows.map((r) => r.name)).toEqual(['Milk 4 L']);
+    expect(fsaRange('M5V')).toEqual(['M5V', 'M5W']);
+  });
+
+  test('coverage lists FSAs with current rows only, and the data queries use the index', () => {
+    const { COVERAGE_SQL } = require('./region');
+    db.exec('CREATE INDEX deals_pc ON flipp_deals(postal_code, valid_to)');
+    db.exec('CREATE INDEX shelf_pc ON store_prices(postal_code, scraped_at)');
+    addDeal('Zehrs', 'Grapes', 2.99, 'L0R2H4');
+    addDeal('Zehrs', 'Grapes', 2.99, 'M5V3L9');
+    db.prepare(`INSERT INTO flipp_deals (merchant, postal_code, name, price, price_real, valid_from, valid_to)
+                VALUES ('Old', 'K1P1J1', 'Stale', '1', 1, '2020-01-01', '2020-01-07T23:59:59-05:00')`).run();
+    addShelf('nofrills', 'Milk 4 L', 5.99, 1, 'H2X1Y4');
+    addShelf('nofrills', 'Milk 4 L', 5.99, 30, 'V6B1A1');
+    const fsas = (sql) => db.prepare(sql).all().map((r) => r.coverage_fsa).sort();
+    expect(fsas(COVERAGE_SQL.deals)).toEqual(['L0R', 'M5V']);
+    expect(fsas(COVERAGE_SQL.shelf)).toEqual(['H2X']);
+    for (const kind of ['deals', 'shelf']) {
+      const plan = db.prepare(`EXPLAIN QUERY PLAN ${sqlFor(kind, 10)}`).all('L0R', 'L0S').map((r) => r.detail).join('\n');
+      expect(plan).toMatch(/USING (COVERING )?INDEX/);
+    }
   });
 });
 
@@ -507,7 +535,7 @@ describe('region resolution', () => {
       jest.resetModules();
       query = jest.fn(async (sql, args) => {
         if (sql.includes('coverage_fsa')) return [{ coverage_fsa: 'M5V' }, { coverage_fsa: 'K1P' }];
-        return args[0] === 'M5V%' ? SHELF_ROWS : [];
+        return args[0] === 'M5V' ? SHELF_ROWS : [];
       });
       jest.doMock('./turso-reader', () => ({ isConfigured: () => true, query, TursoError: Error }));
       server = require('./prices-server');
@@ -527,7 +555,7 @@ describe('region resolution', () => {
       expect(body.fsa).toBe('M4C');
       expect(body.sourceFsa).toBe('M5V');
       expect(body.rows.length).toBeGreaterThan(0);
-      expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM store_prices'), ['M5V%']);
+      expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM store_prices'), ['M5V', 'M5W']);
     });
 
     test('neighbours share one cached answer and one coverage read', async () => {

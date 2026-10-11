@@ -18,11 +18,26 @@ const CENTROIDS = require('./fsa-centroids.json');
 const MAX_DISTANCE_KM = 120;
 const COVERAGE_TTL_MS = 60 * 60 * 1000;
 
+// Which FSAs have current rows. A plain DISTINCT over substr(postal_code)
+// scans the whole table (millions of rows in flipp_deals, billed per row by
+// Turso). This walks the (postal_code, …) index instead: one seek per distinct
+// postal code, plus one EXISTS probe for freshness, so the cost scales with
+// the number of regions, not rows.
+function coverageSql(table, freshness) {
+  return `WITH RECURSIVE codes(pc) AS (
+            SELECT min(postal_code) FROM ${table}
+            UNION ALL
+            SELECT (SELECT min(postal_code) FROM ${table} WHERE postal_code > pc)
+              FROM codes WHERE pc IS NOT NULL
+          )
+          SELECT DISTINCT upper(substr(pc, 1, 3)) AS coverage_fsa FROM codes
+          WHERE pc IS NOT NULL
+            AND EXISTS (SELECT 1 FROM ${table} WHERE postal_code = pc AND ${freshness})`;
+}
+
 const COVERAGE_SQL = {
-  deals: `SELECT DISTINCT upper(substr(postal_code, 1, 3)) AS coverage_fsa FROM flipp_deals
-          WHERE substr(valid_to, 1, 10) >= date('now', '-1 day')`,
-  shelf: `SELECT DISTINCT upper(substr(postal_code, 1, 3)) AS coverage_fsa FROM store_prices
-          WHERE scraped_at > datetime('now', '-7 days')`,
+  deals: coverageSql('flipp_deals', "valid_to >= date('now', '-1 day')"),
+  shelf: coverageSql('store_prices', "scraped_at > datetime('now', '-7 days')"),
 };
 
 const coverageCache = new Map(); // kind → { at, fsas: Set<string> }
