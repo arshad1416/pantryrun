@@ -55,7 +55,7 @@ on — see [Where prices come from](#-where-prices-come-from)), and a multi-stop
 
 ### 🔄 Local-First Real-Time Sync
 - Uses **Yjs CRDTs** for instant local-first data mutations.
-- Syncs in the background over a WebSocket to a relay you run yourself (see `relay-server/`). The default relay URL is `ws://localhost`, so a LAN self-host setup is plain `ws://` — use `wss://` for anything off your own network. List updates are encrypted end-to-end regardless of the transport.
+- Syncs in the background over a WebSocket relay. By default that is the free PantryRun-operated relay at `wss://relay.pantryrun.app` (TLS, port 443; `GroceryApp/src/config/settings.ts` → `HOSTED_RELAY_URL`); Settings → Sync Server → Self-Hosted points the app at a relay you run yourself (see `relay-server/`) — use `wss://` for anything off your own network. List updates are encrypted end-to-end regardless of the transport.
 - The app works fully offline and queues updates until the relay is reachable.
 - Header badge showing sync state (Syncing / Synced / Offline / Local only) and the last-synced time.
 
@@ -71,7 +71,7 @@ zero-knowledge service in the metadata sense — be precise about the difference
 - Family, list, and device identifiers (opaque, but stable and linkable across sessions), plus enrollment/membership state — it needs these to route updates.
 - Connection timing, update sizes, and which devices are online together.
 - The relay **persists** ciphertext updates and enrollment state to disk so offline devices can catch up (aged out after `UPDATE_TTL_MS`, default 30 days). It is not purely ephemeral.
-- If you enable the optional flyer-scan upload, the **flyer image itself** is sent to the relay's extract endpoint without end-to-end encryption — the relay reads that image. It is protected in transit only if you point the app at a `wss://` relay; the shipped default is `ws://localhost` (`GroceryApp/src/config/settings.ts:32`), which has no TLS at all.
+- If you enable the optional flyer-scan upload, the **flyer image itself** is sent to the relay's extract endpoint without end-to-end encryption — the relay reads that image. It is protected in transit by TLS on the default hosted relay (`wss://relay.pantryrun.app`), and on a self-hosted relay only if you use `wss://`. On the hosted relay the image may be processed by Alibaba Cloud Qwen-VL if the operator configures it (see the privacy policy).
 
 **The relay cannot see:** item names, quantities, notes, categories, prices, or your family
 passphrase — those exist only as ciphertext outside your own devices.
@@ -142,7 +142,9 @@ Overview of lists, syncing devices, and active collaboration metrics:
 
 ### Sync relay (optional but required for multi-device sync)
 The app is fully usable offline and single-device without a relay ("Local only"). To sync a
-family across devices, run your own relay from `relay-server/` (see `docker-compose.yml` at the
-repository root and `GroceryApp/docs/self-host-security.md`) and point the app at it in
-Settings. The managed relay tier is hidden in v1 (`GroceryApp/docs/STORE_COMPLIANCE.md`), so
-self-hosting is the only sync path.
+family across devices it uses the free hosted PantryRun relay (`wss://relay.pantryrun.app`) by
+default — deployment: `GroceryApp/docs/deploy-hosted-relay.md` (`docker compose --profile hosted
+up -d` with a Cloudflare Tunnel). Or run your own relay from `relay-server/` (see
+`docker-compose.yml` at the repository root and `GroceryApp/docs/self-host-security.md`) and choose
+Settings → Sync Server → Self-Hosted. Installs that still had the old `ws://localhost` placeholder
+default move to the hosted relay once; custom relay URLs are never changed.

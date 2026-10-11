@@ -74,12 +74,13 @@ beforeEach(async () => {
 
 describe('AC6: Tier Switch', () => {
   describe('Hosting Tier Management', () => {
-    it('should default to self_hosted tier', async () => {
+    it('should default to the managed (PantryRun-hosted) tier', async () => {
       const settings = getSettings();
-      expect(settings.hostingTier).toBe('self_hosted');
+      expect(settings.hostingTier).toBe('managed');
     });
 
     it('should switch to managed tier', async () => {
+      await setHostingTier('self_hosted');
       const updated = await setHostingTier('managed');
       expect(updated.hostingTier).toBe('managed');
 

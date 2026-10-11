@@ -13,10 +13,11 @@
  *  - Entitlement state is computed ONLY by src/config/entitlements.ts:
  *    react-native-iap appears nowhere else in src/, and the store is
  *    created exactly once, there.
- *  - MANAGED_TIER_ENABLED and VOICE_ASSISTANT_LINKING_ENABLED remain false
- *    (the un-buyable subscription-key field must NOT ship next to the IAP
- *    flow — two purchase paths, one dead, is the original 3.1.1 risk), and
- *    the "Managed Subscription" block stays behind {!isSelfHosted && (.
+ *  - MANAGED_TIER_ENABLED is true: the managed tier is now the FREE PantryRun
+ *    relay, rendered behind {!isSelfHosted && (. The un-buyable
+ *    subscription-key field must still NOT ship next to the IAP flow (two
+ *    purchase paths, one dead, is the original 3.1.1 risk), so it is asserted
+ *    absent. VOICE_ASSISTANT_LINKING_ENABLED remains false.
  *
  * Source-scanning idiom follows turso-gated-off.test.ts / ac15-no-analytics:
  * read the real source text, assert on it. The guard matcher is first proven
@@ -214,37 +215,46 @@ describe('only src/config/entitlements.ts computes entitlement state', () => {
   });
 });
 
-// ─── Managed tier and voice linking stay off ─────────────────────────────────
+// ─── Hosted (managed) tier is free; voice linking stays off ─────────────────
 
 describe('no other paid or cloud surface is reachable', () => {
   const settingsScreen = read('src/screens/SettingsScreen.tsx');
 
-  it('MANAGED_TIER_ENABLED is false', () => {
-    expect(settingsScreen).toMatch(/^const MANAGED_TIER_ENABLED = false;$/m);
+  it('MANAGED_TIER_ENABLED is true — the managed tier is the free PantryRun relay', () => {
+    expect(settingsScreen).toMatch(/^const MANAGED_TIER_ENABLED = true;$/m);
   });
 
   it('VOICE_ASSISTANT_LINKING_ENABLED is false', () => {
     expect(settingsScreen).toMatch(/^const VOICE_ASSISTANT_LINKING_ENABLED = false;$/m);
   });
 
-  it('isSelfHosted is unconditionally true while the flag is false', () => {
-    // isSelfHosted = !MANAGED_TIER_ENABLED || …  →  !false || … → true, so the
-    // "Managed Subscription" block behind {!isSelfHosted && ( can never render.
+  it('the stored tier decides isSelfHosted while the flag is on', () => {
     expect(settingsScreen).toContain(
       "const isSelfHosted = !MANAGED_TIER_ENABLED || settings.hostingTier === 'self_hosted';",
     );
   });
 
-  it('the "Managed Subscription" section stays behind {!isSelfHosted && (', () => {
-    const titleIdx = settingsScreen.indexOf('>Managed Subscription<');
+  it('the hosted-tier section sits behind {!isSelfHosted && (', () => {
+    const titleIdx = settingsScreen.indexOf('>PantryRun Relay<');
     expect(titleIdx).toBeGreaterThan(-1);
-    // The nearest guard opening before the title must be the !isSelfHosted one.
     const before = settingsScreen.slice(0, titleIdx);
     const guardIdx = before.lastIndexOf('{!isSelfHosted && (');
     expect(guardIdx).toBeGreaterThan(-1);
-    // No other JSX conditional-block opener between the guard and the title —
-    // i.e. the title lives directly inside that guarded block.
     const between = settingsScreen.slice(guardIdx + '{!isSelfHosted && ('.length, titleIdx);
     expect(between).not.toMatch(/\{\s*!?\w+(\.\w+)*\s*&&\s*\(/);
+  });
+
+  it('the un-buyable subscription-key input is never rendered (3.1.1: one purchase path, the Plus IAP)', () => {
+    // The hosted relay is free. A visible "subscription key" field next to the
+    // real Plus IAP is the original 3.1.1 dead-purchase-path risk.
+    expect(settingsScreen).not.toContain('Subscription Key');
+    expect(settingsScreen).not.toContain('managedSubscriptionKey: v');
+    expect(settingsScreen).not.toContain('>Managed Subscription<');
+  });
+
+  it('the hosted-tier copy discloses what the relay sees', () => {
+    expect(settingsScreen).toContain("so we\n            can't read them");
+    expect(settingsScreen).toContain('30 days');
+    expect(settingsScreen).toContain('Flyer photos you choose to upload are not');
   });
 });

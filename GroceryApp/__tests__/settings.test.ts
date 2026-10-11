@@ -78,9 +78,10 @@ describe('Settings Store Round-Trip', () => {
     const settings = await initSettings();
 
     expect(settings).toBeDefined();
-    expect(settings.hostingTier).toBe('self_hosted');
-    expect(settings.relayUrl).toBe('ws://localhost');
-    expect(settings.relayPort).toBe(8080);
+    // New installs default to the free PantryRun-hosted relay.
+    expect(settings.hostingTier).toBe('managed');
+    expect(settings.relayUrl).toBe('wss://relay.pantryrun.app');
+    expect(settings.relayPort).toBe(443);
     expect(settings.localAiEndpoint).toBe('http://localhost:1234');
     expect(settings.priceServiceEnabled).toBe(false);
     expect(settings.voiceInputEnabled).toBe(false);
@@ -141,6 +142,9 @@ describe('Tier Switching', () => {
     });
 
     await initSettings();
+    expect(getHostingTier()).toBe('managed');
+
+    await setHostingTier('self_hosted');
     expect(getHostingTier()).toBe('self_hosted');
 
     await setHostingTier('managed');

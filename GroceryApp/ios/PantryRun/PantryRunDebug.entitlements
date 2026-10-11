@@ -19,7 +19,8 @@
     <string>development</string>
     <key>com.apple.developer.associated-domains</key>
     <array>
-      <string>applinks:groceryapp.app</string>
+      <string>applinks:pantryrun.app</string>
+      <string>applinks:www.pantryrun.app</string>
     </array>
   </dict>
 </plist>

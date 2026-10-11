@@ -149,7 +149,7 @@ check('M5: public API endpoints are pinned to HTTPS', () => {
     /<domain-config[^>]*cleartextTrafficPermitted="false"/.test(nsc),
     'no domain-config denies cleartext; the app gained nothing over the bare attribute'
   );
-  for (const host of ['groceryapp.app', 'api.nal.usda.gov', 'openfoodfacts.org']) {
+  for (const host of ['pantryrun.app', 'api.nal.usda.gov', 'openfoodfacts.org']) {
     assert.ok(nsc.includes(`>${host}<`), `public endpoint not pinned to HTTPS: ${host}`);
   }
 });
@@ -409,6 +409,120 @@ check('N1: no doc still claims Play resolves the offer without a token', () => {
         live.map((l) => '    ' + l.trim().slice(0, 120)).join('\n')
     );
   }
+});
+
+// ── Store readiness: launch screen, purpose strings, link hosts ─────────────
+check('S1: every image the launch storyboard names exists in Images.xcassets', () => {
+  // A storyboard image name with no matching imageset renders a blank launch
+  // screen — it shipped that way once ("SplashScreen" vs "SplashScreenLogo").
+  const sb = read('ios/PantryRun/SplashScreen.storyboard');
+  // <imageView … image="X"> references plus <resources><image name="X">
+  // declarations (accessibilityTraits also has an image="YES" attribute).
+  const names = new Set([
+    ...[...sb.matchAll(/<imageView\b[^>]*\bimage="([^"]+)"/g)].map((m) => m[1]),
+    ...[...sb.matchAll(/<image name="([^"]+)"/g)].map((m) => m[1]),
+  ]);
+  assert.ok(names.size > 0, 'launch storyboard shows no image at all');
+  for (const name of names) {
+    const dir = path.join(root, 'ios/PantryRun/Images.xcassets', `${name}.imageset`);
+    assert.ok(fs.existsSync(path.join(dir, 'Contents.json')), `no ${name}.imageset in Images.xcassets`);
+    const { images } = JSON.parse(fs.readFileSync(path.join(dir, 'Contents.json'), 'utf8'));
+    for (const img of images.filter((i) => i.filename)) {
+      assert.ok(fs.existsSync(path.join(dir, img.filename)), `${name}.imageset is missing ${img.filename}`);
+    }
+  }
+});
+
+check('S2: iOS carries a microphone purpose string (expo-camera links audio APIs)', () => {
+  const plist = read('ios/PantryRun/Info.plist');
+  assert.ok(
+    /<key>NSMicrophoneUsageDescription<\/key>\s*<string>[^<]{20,}<\/string>/.test(plist),
+    'Info.plist has no NSMicrophoneUsageDescription; App Store processing rejects binaries that link microphone APIs without one'
+  );
+  assert.ok(readJson('app.json').expo.ios.infoPlist.NSMicrophoneUsageDescription, 'app.json lost the microphone purpose string');
+});
+
+check('S3: universal/app link hosts agree across entitlements, manifest, app.json and code', () => {
+  const HOSTS = ['pantryrun.app', 'www.pantryrun.app'];
+  const app = readJson('app.json').expo;
+  for (const f of ['ios/PantryRun/PantryRun.entitlements', 'ios/PantryRun/PantryRunDebug.entitlements']) {
+    const domains = [...read(f).matchAll(/<string>applinks:([^<]+)<\/string>/g)].map((m) => m[1]).sort();
+    assert.deepStrictEqual(domains, [...HOSTS].sort(), `${f} applinks drifted: ${domains.join(', ')}`);
+  }
+  assert.deepStrictEqual(app.ios.associatedDomains.slice().sort(), HOSTS.map((h) => `applinks:${h}`).sort());
+  const manifest = read('android/app/src/main/AndroidManifest.xml');
+  const verified = manifest.slice(manifest.indexOf('android:autoVerify="true"'));
+  const block = verified.slice(0, verified.indexOf('</intent-filter>'));
+  const manifestHosts = [...block.matchAll(/android:host="([^"]+)"/g)].map((m) => m[1]).sort();
+  assert.deepStrictEqual(manifestHosts, [...HOSTS].sort(), `autoVerify hosts drifted: ${manifestHosts.join(', ')}`);
+  const appJsonHosts = app.android.intentFilters
+    .filter((f) => f.autoVerify)
+    .flatMap((f) => f.data.map((d) => d.host))
+    .sort();
+  assert.deepStrictEqual(appJsonHosts, [...HOSTS].sort());
+  const deepLinks = read('src/navigation/deepLinks.ts');
+  for (const h of HOSTS) assert.ok(deepLinks.includes(`'https://${h}'`), `deepLinks.ts prefixes miss https://${h}`);
+  // groceryapp.app never existed (NXDOMAIN); it must not creep back into config.
+  for (const f of ['app.json', 'android/app/src/main/AndroidManifest.xml', 'ios/PantryRun/PantryRun.entitlements', 'src/navigation/deepLinks.ts']) {
+    assert.ok(!read(f).includes('groceryapp.app'), `${f} still references groceryapp.app`);
+  }
+});
+
+check('S4: the custom invite scheme old builds generate is still registered', () => {
+  // Every shipped build writes groceryapp://invite links; dropping the scheme
+  // would kill every outstanding invite.
+  assert.ok(/<string>groceryapp<\/string>/.test(read('ios/PantryRun/Info.plist')), 'iOS lost the groceryapp scheme');
+  assert.ok(/android:scheme="groceryapp"/.test(read('android/app/src/main/AndroidManifest.xml')), 'Android lost the groceryapp scheme');
+});
+
+check('S6: Android backup and device transfer are off, and prebuild reproduces it', () => {
+  // Restored SecureStore values / DB rows are undecryptable on a new device
+  // (the Keystore key does not move), so the app opts out entirely.
+  const manifest = read('android/app/src/main/AndroidManifest.xml');
+  assert.ok(/android:allowBackup="false"/.test(manifest), 'manifest allows Auto Backup');
+  assert.ok(
+    /android:dataExtractionRules="@xml\/data_extraction_rules"/.test(manifest),
+    'Android 12+ still does device-to-device transfer without dataExtractionRules'
+  );
+  const plugin = require(path.join(root, 'plugins/withAndroidBackupRules.js'));
+  assert.strictEqual(read(path.join('android', plugin.RES_PATH)), plugin.DATA_EXTRACTION_RULES_XML,
+    'committed data_extraction_rules.xml drifted from the plugin that regenerates it');
+  for (const section of ['cloud-backup', 'device-transfer']) {
+    const block = plugin.DATA_EXTRACTION_RULES_XML.split(`<${section}>`)[1].split(`</${section}>`)[0];
+    for (const d of ['database', 'sharedpref']) {
+      assert.ok(block.includes(`<exclude domain="${d}" path="." />`), `${section} does not exclude ${d}`);
+    }
+    assert.ok(!block.includes('<include'), `${section} re-includes something`);
+  }
+  const plugins = readJson('app.json').expo.plugins.map((p) => (Array.isArray(p) ? p[0] : p));
+  assert.ok(plugins.includes('./plugins/withAndroidBackupRules.js'), 'backup-rules plugin not registered');
+  assert.strictEqual(readJson('app.json').expo.android.allowBackup, false);
+  const app = { $: { 'android:name': '.MainApplication', 'android:allowBackup': 'true' } };
+  plugin.setBackupRules({ manifest: { application: [app] } });
+  assert.strictEqual(app.$['android:allowBackup'], 'false');
+});
+
+check('S7: one marketing version everywhere (package.json, app.json, native trees)', () => {
+  const pkg = readJson('package.json').version;
+  const app = readJson('app.json').expo.version;
+  const gradle = /versionName\s+"([^"]+)"/.exec(read('android/app/build.gradle'))[1];
+  const plist = /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]*)<\/string>/.exec(
+    read('ios/PantryRun/Info.plist')
+  )[1];
+  assert.deepStrictEqual(
+    { pkg, gradle, plist },
+    { pkg: app, gradle: app, plist: app },
+    `version drift: package.json ${pkg}, app.json ${app}, build.gradle ${gradle}, Info.plist ${plist}`
+  );
+});
+
+pending('S5: hosted association files carry real IDs, not placeholders', () => {
+  // site/.well-known/* are the ready-to-host copies for the pantryrun-site Worker.
+  // Universal / app links cannot verify until the owner fills these in.
+  const aasa = readDoc('../site/.well-known/apple-app-site-association');
+  const links = readDoc('../site/.well-known/assetlinks.json');
+  assert.ok(!aasa.includes('TEAMID.'), 'apple-app-site-association still has the TEAMID placeholder');
+  assert.ok(!links.includes('REPLACE_WITH_'), 'assetlinks.json still has the SHA-256 placeholder');
 });
 
 let failed = 0;

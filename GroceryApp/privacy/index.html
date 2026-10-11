@@ -97,6 +97,22 @@
       border-bottom: 1px solid var(--border);
     }
     th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; }
+      .stamp { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+    .lede { color: var(--muted); font-size: 16px; }
+    .callout {
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+      padding: 14px 18px;
+      margin: 18px 0 22px;
+    }
+    .callout p:last-child { margin-bottom: 0; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.88em;
+    }
+    table { display: block; overflow-x: auto; }
+    td { vertical-align: top; }
   </style>
 </head>
 <body>
@@ -106,173 +122,380 @@
          PRIVACY POLICY
          ════════════════════════════════════════════════════════════════ -->
 
-    <div class="card">
+    <!-- Hosted copy (served at https://www.pantryrun.app/privacy) lives in
+         site/privacy/index.html at the repo root. Keep the two in step. -->
+    <div class="card" id="quick-summary">
       <h1>Privacy Policy</h1>
-      <p class="subtitle">PantryRun — Last updated: July 28, 2026</p>
+      <p class="stamp">Effective 11 October 2026 · Applies to PantryRun for iOS and Android</p>
+
+      <p class="lede">
+        This policy describes what the app actually does, checked against the code that
+        ships. Where something is imperfect, it says so.
+      </p>
+
+      <div class="callout">
+        <p><strong>The short version.</strong></p>
+        <ul style="margin-bottom:0">
+          <li>There is no account. We never ask for your name, email or phone number.</li>
+          <li>Your lists live on your device. When you share with family, they are encrypted on your device first. By default they sync through a relay server that we (PantryRun) operate; it passes along sealed data it cannot read. You can switch to a relay you run yourself at any time.</li>
+          <li>The relay does see routing details (which family, list and device a message belongs to, when, and how big it is) and keeps the sealed updates for 30 days.</li>
+          <li>A store-flyer photo you choose to upload is <strong>not</strong> end-to-end encrypted. It is read by an automated price-extraction step and then discarded.</li>
+          <li>The app cannot access your location or contacts and never records audio.</li>
+          <li>There are no ads, no analytics, no trackers, and no advertising identifiers.</li>
+        </ul>
+      </div>
 
       <div class="toc">
         <strong>Contents</strong>
         <ol>
-          <li><a href="#quick-summary">Quick Summary</a></li>
-          <li><a href="#what-we-collect">What We Collect</a></li>
-          <li><a href="#how-data-is-stored">How Your Data Is Stored</a></li>
-          <li><a href="#family-sharing">Family Sharing &amp; Relay</a></li>
-          <li><a href="#optional-features">Optional Features</a></li>
-          <li><a href="#crash-reporting">Analytics &amp; Crash Reporting</a></li>
-          <li><a href="#your-rights">Your Rights &amp; Data Deletion</a></li>
-          <li><a href="#children">Children's Privacy</a></li>
-          <li><a href="#changes">Changes to This Policy</a></li>
+          <li><a href="#who">Who is responsible</a></li>
+          <li><a href="#device">What stays on your device</a></li>
+          <li><a href="#leaves">What leaves your device</a></li>
+          <li><a href="#never">What we never collect</a></li>
+          <li><a href="#sync">Family sync and the relay server</a></li>
+          <li><a href="#barcode">Barcode scanning</a></li>
+          <li><a href="#prices">Price features and flyer photos</a></li>
+          <li><a href="#purchases">Purchases (PantryRun Plus)</a></li>
+          <li><a href="#crash">Crash reporting</a></li>
+          <li><a href="#deleting">Deleting your data</a></li>
+          <li><a href="#rights">Your rights</a></li>
+          <li><a href="#children">Children</a></li>
+          <li><a href="#transfers">Where data goes</a></li>
+          <li><a href="#changes">Changes</a></li>
           <li><a href="#contact">Contact</a></li>
         </ol>
       </div>
 
-      <h2 id="quick-summary">1. Quick Summary</h2>
+      <h2 id="who">1. Who is responsible</h2>
       <p>
-        PantryRun is a privacy-first grocery list app. Your grocery lists are stored
-        <strong>locally on your device</strong> and encrypted with
-        XChaCha20-Poly1305. We don't run central servers that see your
-        data — there are no accounts and no sign-ups. When you use family sharing,
-        your lists sync through a <strong>self-hosted relay server that you run and
-        control</strong>. Your list data is end-to-end encrypted, and neither we nor
-        anyone operating network infrastructure can read it. This version of
-        PantryRun sends <strong>no analytics, no crash reports, and no telemetry</strong>
-        to anyone.
+        PantryRun is built by an independent developer based in Ontario, Canada, who is
+        the data controller for the limited processing described here, including the
+        PantryRun-operated relay. For any privacy question or request, write to
+        <a href="mailto:privacy@pantryrun.app">privacy@pantryrun.app</a>.
       </p>
 
-      <h2 id="what-we-collect">2. What We Collect</h2>
-      <p><strong>We collect nothing.</strong> No data from PantryRun reaches servers we
-      operate or any third party that keeps it. The data the app handles, and where
-      it lives:</p>
+      <h2 id="device">2. What stays on your device</h2>
+      <p>
+        Your grocery lists are stored in a database on your phone. Sensitive text is
+        encrypted field by field before it is written:
+      </p>
       <ul>
-        <li><strong>Grocery list data</strong> — sensitive text fields such as item names, notes, and list names are encrypted locally. Quantities, categories, identifiers, and timestamps remain readable in the local database; notification history may contain readable names. The database file relies on your device's storage protection. When family sync is on, list content travels to <em>your own relay server</em> as end-to-end-encrypted ciphertext.</li>
-        <li><strong>Device pairing key</strong> — a randomly generated public key used for family pairing. It is sent only to <em>your own relay server</em> during enrollment. Not linked to your identity; not a hardware or advertising ID.</li>
-        <li><strong>Family member display names</strong> — names you choose for yourself within the app. Encrypted at rest, synced only as ciphertext.</li>
-        <li><strong>Barcode numbers</strong> — only if you turn on optional barcode lookup, scanned barcode digits are sent to the Open Food Facts public database to fetch the product's name. The service also sees the network IP address used for the request. See <a href="#optional-features">Optional Features</a>.</li>
-      </ul>
-      <p>We do <strong>not</strong> collect: your real name, email address, phone number, location, contacts, advertising identifiers, analytics events, crash reports, or any browsing history.</p>
-
-      <h2 id="how-data-is-stored">3. How Your Data Is Stored</h2>
-      <ul>
-        <li><strong>On-device:</strong> Grocery data lives in a WatermelonDB database with sensitive text fields encrypted using XChaCha20-Poly1305; the whole database is not encrypted by the app. Sensitive keys (encryption keys, pairing codes, your recovery material) are stored in your device's secure credential storage via <code>expo-secure-store</code>.</li>
-        <li><strong>In transit:</strong> Family sync uses WebSocket connections to your relay. Sync payloads are end-to-end encrypted — the relay forwards and briefly stores opaque ciphertext it cannot read.</li>
-        <li><strong>On your relay:</strong> Your self-hosted relay <em>does</em> store data so that offline devices can catch up: encrypted list updates (automatically deleted after 30 days), device enrollment records (which expire 30 days after a device's last connection), and — if you use flyer scanning — nothing: flyer images are processed in memory and discarded. Everything retained is either ciphertext or a random public key. Because you run the relay, this data never leaves infrastructure you control.</li>
-        <li><strong>Your keys, your data:</strong> Encryption keys exist only on your devices and in your 12-word recovery phrase. There is no server-side reset. <strong>If you lose all of your family's devices and the recovery phrase, your data is permanently unrecoverable</strong> — by design.</li>
-      </ul>
-
-      <h2 id="family-sharing">4. Family Sharing &amp; Relay</h2>
-      <p>
-        PantryRun's family sharing works by pairing devices via QR code. Paired devices
-        sync through a WebSocket relay server that <strong>you run yourself</strong>
-        (we provide the open-source relay software; this version of the app has no
-        hosted relay option).
-      </p>
-      <p>
-        The relay server sees only: your device pairing key (a random string),
-        connection timestamps, and encrypted blobs it cannot read. No grocery item
-        names, list contents, or personal information are visible to the relay. The
-        encrypted blobs it stores expire automatically after 30 days.
-      </p>
-
-      <h2 id="optional-features">5. Optional Features</h2>
-
-      <h3>Price Lookups (Opt-In)</h3>
-      <p>
-        If you enable the price lookup feature, PantryRun matches your grocery list
-        against prices stored <strong>locally on your device</strong> — prices read
-        from flyers you scan and prices you enter yourself. In this version of the
-        app, <strong>your item names are never sent to any server</strong> for price
-        lookup. Your shopping habits are not tracked or stored anywhere off your
-        device. You can disable this at any time in Settings.
-      </p>
-
-      <h3>Flyer Scanning (Opt-In)</h3>
-      <p>
-        If you photograph a store flyer to extract prices, the photo is stripped of
-        location and camera metadata (EXIF) on your device and then sent to your
-        own relay server for extraction, after which it is discarded.
-        <strong>Unlike your grocery lists, flyer photos are not end-to-end
-        encrypted</strong> — your relay can see the flyer image contents (store and
-        product names and prices printed on the flyer). Because you host the relay,
-        the photo stays inside infrastructure you control. This feature only runs
-        when you tap the flyer-scan camera button and can be disabled in Settings.
-      </p>
-
-      <h3>Barcode Scanning &amp; Lookups (Opt-In)</h3>
-      <p>
-        Camera access is used to scan product barcodes for adding items. Camera
-        frames are processed in real-time on your device and discarded — no images
-        are captured, stored, or transmitted. To turn a barcode into a product
-        name, PantryRun sends the <strong>barcode number and nothing else</strong>
-        to the <a href="https://world.openfoodfacts.org" target="_blank"
-        rel="noopener">Open Food Facts</a> public food database. No account,
-        device identifier, or list data accompanies that request, and we retain
-        nothing from it. Barcode lookups are off by default: the app asks for your
-        consent the first time you open the scanner, and you can turn them off
-        anytime in Settings. (A USDA FoodData Central fallback exists in the code
-        but is inactive in this version — no API key is configured.)
-      </p>
-
-      <h3>Voice Input</h3>
-      <p>
-        This version of PantryRun has <strong>no voice feature</strong>: the app
-        never requests microphone access and processes no audio. The "voice input"
-        button opens an on-device text box where you can type or paste a phrase
-        like "2 apples and milk" to add several items at once. If a real voice
-        feature ships in a future update, this policy will be updated first.
-      </p>
-
-      <h3>Push Notifications</h3>
-      <p>
-        PantryRun uses <code>expo-notifications</code> for local reminders (e.g.,
-        shopping reminders). Notification data stays on your device. We do not send
-        remote push notifications through any third-party service.
-      </p>
-
-      <h2 id="crash-reporting">6. Analytics &amp; Crash Reporting</h2>
-      <p>
-        This version of PantryRun sends <strong>no analytics, no crash reports, and
-        no telemetry</strong> to anyone. The app contains no advertising or
-        analytics SDKs, and its crash-reporting module ships unconfigured and never
-        activates. If a future update adds optional crash reporting, it will be
-        disclosed here, reflected in the app-store privacy labels, and controllable
-        in the app before it sends anything.
-      </p>
-
-      <h2 id="your-rights">7. Your Rights &amp; Data Deletion</h2>
-      <p>Because PantryRun has no accounts and stores your data locally:</p>
-      <ul>
-        <li><strong>To delete local data:</strong> Use <strong>Settings → Delete All Data</strong> in the app. After confirmation, the app attempts to erase the local grocery database, settings, and keys this install can address, including the master encryption key and device keypair. If a step fails, some data or keys may remain; the app reports errors it receives so you can retry. Some secure-storage cleanup failures may not be reported; completion is not a guarantee that every key was erased. This does not erase copies on other family devices or your relay. Uninstalling is not a guarantee that secure-storage entries are erased on every platform.</li>
-        <li><strong>To clear only price data:</strong> Use the "Clear Local Prices" button in Settings.</li>
-        <li><strong>To leave a family:</strong> Unpair your device in Settings. Copies of your family's <em>encrypted</em> updates may remain on your own relay server for up to 30 days, after which the relay deletes them automatically; you can also delete them immediately since you administer the relay. They are ciphertext throughout.</li>
-        <li><strong>About unreachable copies:</strong> Secure device storage cannot enumerate every stored key, so recovery or passkey entries for forgotten identities may survive a wipe. The app attempts to delete known keys, but cannot guarantee that every forgotten entry becomes undecryptable. Relay ciphertext is not erased by local deletion and may remain readable to other family devices or anyone holding the recovery phrase. Your relay administrator must erase relay copies separately if immediate deletion is needed.</li>
-        <li><strong>To export your data:</strong> Your grocery data is in a local SQLite database. We plan to add a CSV export feature in a future update.</li>
+        <li><strong>Encrypted:</strong> item names, item notes, list names, list descriptions, store preferences, and family member display names.</li>
+        <li><strong>Not encrypted:</strong> quantities, units, categories, checked/unchecked state, sort order, identifiers and timestamps. These are left readable so the app can sort, group and search without decrypting everything.</li>
       </ul>
       <p>
-        There is no server-side copy of your data for us to delete: this version of
-        the app talks only to the relay server you host yourself. Questions about
-        any of this: <a href="mailto:privacy@pantryrun.app">privacy@pantryrun.app</a>.
+        Two honest caveats. Your in-app <strong>notification history stores item and list
+        names unencrypted</strong>, so a name encrypted in your list may appear in
+        cleartext in that history. And the database <em>file</em> itself is not separately
+        encrypted: it relies on your device's own storage protection, which is why a
+        device passcode matters.
+      </p>
+      <p>
+        Encryption keys and your recovery phrase are held in your operating system's
+        secure credential storage (Keychain on iOS, Keystore-backed encrypted storage on
+        Android) rather than in ordinary app files. They are never transmitted anywhere.
+        On iOS, Keychain entries can <strong>survive uninstalling the app</strong>; see
+        <a href="#deleting">Deleting your data</a>.
       </p>
 
-      <h2 id="children">8. Children's Privacy</h2>
+      <h3>The cryptography, precisely</h3>
       <p>
-        PantryRun is not directed at children under 13. We do not knowingly collect
-        personal information from children. If you believe a child has provided us
-        with personal information, please contact us and we will delete it.
+        Content is encrypted with <strong>XChaCha20-Poly1305</strong> (authenticated, with
+        a random 24-byte nonce, bound to the field it belongs to). Passphrase-derived keys
+        use <strong>Argon2id</strong>. Family invitations are signed with
+        <strong>Ed25519</strong>, and the family key is delivered to a joining device
+        inside an <strong>X25519 sealed box</strong>. A single family master key protects
+        both stored content and sync traffic.
+      </p>
+      <p>
+        Your 12-word recovery phrase uses the standard BIP39 <em>wordlist</em>, but its
+        checksum and key derivation deliberately differ from the BIP39 specification. It
+        is not a cryptocurrency wallet phrase and should not be imported into wallet
+        software.
       </p>
 
-      <h2 id="changes">9. Changes to This Policy</h2>
+      <h2 id="leaves">3. What leaves your device</h2>
+      <p>This is the complete list for the released app.</p>
+      <table>
+        <thead>
+          <tr><th>What</th><th>When</th><th>Goes to</th><th>Readable there?</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Encrypted list updates</td>
+            <td>You edit a list while paired with family</td>
+            <td>Your family's relay (by default, the PantryRun relay)</td>
+            <td>No: sealed ciphertext</td>
+          </tr>
+          <tr>
+            <td>Routing metadata: family ID, device ID, list ID, timestamps, message sizes, and a random device public key at enrollment</td>
+            <td>Alongside every sync message</td>
+            <td>The relay</td>
+            <td>Yes</td>
+          </tr>
+          <tr>
+            <td>A photographed store flyer</td>
+            <td>Only when you photograph or pick a flyer to scan</td>
+            <td>The relay, then its extraction service (see §7)</td>
+            <td>Yes: flyer images are not end-to-end encrypted</td>
+          </tr>
+          <tr>
+            <td>The first 3 characters of your postal code (FSA)</td>
+            <td>Weekly-deal and shelf-price lookups</td>
+            <td>The relay, which queries its own price database by region</td>
+            <td>Yes. Your list is never sent; matching happens on your device</td>
+          </tr>
+          <tr>
+            <td>A product barcode</td>
+            <td>Only if you switch on barcode lookups, then scan a code</td>
+            <td>Open Food Facts (openfoodfacts.org); USDA FoodData Central only in builds configured with a USDA key</td>
+            <td>Yes</td>
+          </tr>
+          <tr>
+            <td>An anonymised price observation</td>
+            <td>Only if you switch on "Contribute my scans"</td>
+            <td>The shared price pool on the relay</td>
+            <td>Yes, but not linked to you (see §7)</td>
+          </tr>
+          <tr>
+            <td>A purchase of PantryRun Plus</td>
+            <td>Only when you subscribe or restore</td>
+            <td>Apple App Store or Google Play</td>
+            <td>Yes, by the store (see §8)</td>
+          </tr>
+          <tr>
+            <td>A store name and postal-code prefix</td>
+            <td>You tap "navigate to store"</td>
+            <td>Apple Maps or Google Maps</td>
+            <td>Yes</td>
+          </tr>
+        </tbody>
+      </table>
       <p>
-        We may update this policy from time to time. We will notify you of material
-        changes by updating the "Last updated" date and, where appropriate, through
-        an in-app notification. Continued use of PantryRun after changes constitutes
-        acceptance of the updated policy.
+        Every one of these requests also carries your IP address, as any internet request
+        necessarily does.
       </p>
 
-      <h2 id="contact">10. Contact</h2>
+      <h2 id="never">4. What we never collect</h2>
       <p>
-        Questions about this privacy policy?<br />
-        Email: <a href="mailto:privacy@pantryrun.app">privacy@pantryrun.app</a><br />
-        Website: <a href="https://groceryapp.app">groceryapp.app</a>
+        These are structural facts about the app, not just promises. The app declares no
+        location or contacts permission, so it cannot read them even if asked to.
+      </p>
+      <ul>
+        <li><strong>No location.</strong> No GPS, no coarse location, no location permission of any kind. The only geographic hint the app can send is the 3-character prefix of a postal code.</li>
+        <li><strong>No contacts, no calendar, no files.</strong></li>
+        <li><strong>No name, email address, phone number or postal address.</strong> There is nowhere in the app to enter one.</li>
+        <li><strong>No advertising identifier, no ad networks, no analytics or attribution SDKs, no trackers.</strong></li>
+        <li><strong>No push tokens.</strong> Notifications are generated locally on your device; the app does not register with Apple or Google push services.</li>
+        <li><strong>No audio.</strong> The app never records sound. iOS shows a microphone permission description only because the camera component can record video with sound; PantryRun does not use that.</li>
+        <li><strong>No photo library scanning.</strong> The camera is used only when you open it, and a photo you pick is used only for the flyer feature.</li>
+        <li>We do not sell or share your personal information, in the sense those words carry under California law or any other.</li>
+      </ul>
+
+      <h2 id="sync">5. Family sync and the relay server</h2>
+      <p>
+        Sharing a list between phones needs a small server, a "relay", to pass messages.
+        <strong>By default the app uses a relay operated by PantryRun</strong>
+        (<code>relay.pantryrun.app</code>), free of charge. You can instead run the
+        open-source relay yourself and point the app at it in
+        Settings&nbsp;→&nbsp;Sync Server&nbsp;→&nbsp;Self-Hosted. Either way, list content
+        travels sealed: the relay handles ciphertext and cannot read your item names,
+        notes or quantities.
+      </p>
+      <p>What the relay operator can see, because it needs it to route messages:</p>
+      <ul>
+        <li>your family ID and device ID, a random device public key, and which devices connect when;</li>
+        <li>which list an update belongs to, its size, and how often updates happen;</li>
+        <li>your IP address, used in memory for rate limiting and not written to the relay's storage.</li>
+      </ul>
+      <p>What the relay stores, and for how long:</p>
+      <ul>
+        <li><strong>Encrypted updates</strong>, so a device that was offline can catch up. They are deleted automatically 30 days after they arrive.</li>
+        <li><strong>Device enrollment records</strong> (device ID, family ID, public key, an access token), which expire 30 days after the device last connected.</li>
+        <li><strong>Spent one-time markers</strong> for used invites and anonymous price tokens, so they cannot be replayed. These contain no list content.</li>
+      </ul>
+      <p>
+        <strong>Unpairing a device does not erase relayed data:</strong> it removes that
+        device's credentials locally and stops future syncing, but updates already relayed
+        remain for the rest of their 30 days, and if you re-pair within that window they
+        will sync back to you.
+      </p>
+      <p>
+        The PantryRun relay is reached through <strong>Cloudflare</strong>, which provides
+        our TLS certificate and network protection. Cloudflare therefore handles the
+        traffic in transit, including your IP address, the routing metadata above, and any
+        flyer image you upload; list contents remain sealed ciphertext. Cloudflare
+        processes this as our service provider under its own privacy policy.
+      </p>
+
+      <h2 id="barcode">6. Barcode scanning</h2>
+      <p>
+        Barcode lookups are off until you allow them, either at the scanner's first-use
+        prompt or in Settings&nbsp;→&nbsp;Features. While they are off, no barcode leaves
+        your device.
+      </p>
+      <p>
+        Turning them on lets the app translate a scanned code into a product name by
+        sending the <strong>barcode number and nothing else</strong> to
+        <a href="https://world.openfoodfacts.org" target="_blank" rel="noopener">Open Food Facts</a>,
+        an independent open food database run by a French non-profit under its own privacy
+        policy. Builds configured with a USDA API key may also ask
+        <strong>USDA FoodData Central</strong> (a U.S. government database) when Open Food
+        Facts has no match. Neither receives list contents or any identifier of yours,
+        only the barcode and, unavoidably, your IP address.
+      </p>
+
+      <h2 id="prices">7. Price features and flyer photos</h2>
+      <p>
+        Price matching against your list happens <strong>on your device</strong>. Prices you
+        type in stay on your device.
+      </p>
+
+      <h3>Flyer photos</h3>
+      <p>
+        If you photograph or pick a store flyer, the image is stripped of EXIF metadata on
+        your device (removing camera details and any embedded location) before it is
+        uploaded. If stripping fails, the upload is abandoned rather than sent. The image
+        is then sent to your family's relay for automated price extraction and discarded
+        after processing. <strong>A flyer image is not end-to-end encrypted:</strong> the
+        relay operator, and the extraction service below, can see the picture. Photograph
+        the flyer, not your kitchen.
+      </p>
+      <p>
+        Extraction is performed by one of two kinds of service, chosen by whoever runs the
+        relay:
+      </p>
+      <ul>
+        <li>a vision model running on the relay operator's own hardware (Ollama), in which case the image does not leave that infrastructure; or</li>
+        <li><strong>Alibaba Cloud Model Studio</strong> (the Qwen-VL model via the DashScope API), in which case the image is transmitted to Alibaba Cloud for processing under Alibaba Cloud's terms. Depending on the endpoint configured, that processing takes place in Singapore or in mainland China.</li>
+      </ul>
+      <p>
+        If you self-host the relay, you choose. Flyer upload only happens when you start a
+        flyer scan, and can be turned off in Settings.
+      </p>
+
+      <h3>Weekly deals and shelf prices</h3>
+      <p>
+        To show this week's deals and recent shelf prices, the app asks the relay for the
+        prices in your region, identified only by the first three characters of your
+        postal code (for example <code>M5V</code>). The relay reads them from its operator's
+        price database (hosted with Turso) using that region code alone. Your list, item
+        names and full postal code are never sent; the request is authenticated with your
+        device's relay token, so the relay knows which enrolled device asked for which
+        region.
+      </p>
+
+      <h3>Sharing prices with the community</h3>
+      <p>
+        This is off unless you turn it on. When enabled, a price you captured may be
+        contributed to a shared pool so other shoppers benefit. Before it leaves, the
+        record is reduced to the store, the item and its size, the price, and the week it
+        was seen (no device ID, no family ID, no exact timestamp), it is authorised with an
+        anonymous blind-signed token the relay cannot link back to you, and it is sent after
+        a randomised delay so it cannot easily be correlated with what you were doing. The
+        pool still sees the IP address the contribution arrives from.
+      </p>
+
+      <h2 id="purchases">8. Purchases (PantryRun Plus)</h2>
+      <p>
+        PantryRun Plus is an optional subscription sold through Apple's App Store or
+        Google Play. The store handles payment and your store account; we never receive
+        your name, email, card or billing details. The app receives a confirmation of the
+        purchase from the store, and records that your family has Plus inside your
+        family's encrypted data so your other devices unlock too. Manage or cancel the
+        subscription in your App Store or Google Play account settings.
+      </p>
+
+      <h2 id="crash">9. Crash reporting</h2>
+      <p>
+        The app contains crash-reporting code (Sentry), but it is inert in released
+        builds: no reporting endpoint is configured, so the reporter is never started and
+        no crash data is transmitted. If a future release ever enables crash reporting,
+        this policy and the app stores' data disclosures will be updated in the same
+        release, and the setting will remain yours to turn off.
+      </p>
+
+      <h2 id="deleting">10. Deleting your data</h2>
+      <p>Being straight about what each control really does:</p>
+      <table>
+        <thead><tr><th>Action</th><th>What it actually does</th></tr></thead>
+        <tbody>
+          <tr><td>Delete an item or list in the app</td><td>Marks it deleted and hides it. The row remains in the local database, with its name still encrypted, so the deletion can sync to other devices.</td></tr>
+          <tr><td>Clear Local Prices (Settings)</td><td>Erases stored price data on that device.</td></tr>
+          <tr><td>Leave Family / unpair (Settings)</td><td>Removes this device's sync credentials and stops syncing. Does not erase data already on the relay (see §5).</td></tr>
+          <tr><td>Delete All Data (Settings → Danger Zone)</td><td>Deletes the local grocery database, settings, encryption keys and device identity this install can address. Some secure-storage cleanup failures may not be reported, so completion is not a guarantee that every key was erased. This does not erase copies on other family devices or your relay.</td></tr>
+          <tr><td>Uninstall the app</td><td>Removes the local database. On iOS, Keychain entries (keys, recovery material) can survive an uninstall and be found again by a reinstall; use Delete All Data first if you want them gone.</td></tr>
+        </tbody>
+      </table>
+      <p>
+        <strong>About unreachable copies.</strong> Secure device storage cannot enumerate
+        every stored key, so recovery or passkey entries left by an earlier family or
+        identity this install has forgotten may survive a wipe. The app attempts to delete
+        every key it knows about, but cannot guarantee that every forgotten entry becomes
+        undecryptable. Relay ciphertext is not erased by local deletion and stays readable
+        to other family devices and to anyone holding the recovery phrase.
+      </p>
+      <p>
+        To have data held on the PantryRun relay deleted before its automatic 30-day
+        expiry, email <a href="mailto:privacy@pantryrun.app">privacy@pantryrun.app</a>
+        (tell us roughly when you paired, or send your family ID from the app). Because the
+        contents are sealed, we can delete a family's stored blobs but cannot read them or
+        tell you what they contained. If you self-host, you can delete them yourself.
+      </p>
+
+      <h2 id="rights">11. Your rights</h2>
+      <p>
+        Depending on where you live, you have rights to access, correct, delete, port or
+        restrict the processing of your personal data, to object to it, and to complain to
+        a regulator: in Canada the Office of the Privacy Commissioner, in the EU/UK your
+        national data protection authority.
+      </p>
+      <p>
+        PantryRun's design changes the practical shape of these rights: almost everything
+        is already in your hands on your own device, and what we hold on the relay is
+        sealed data we cannot read, plus routing metadata keyed to random identifiers.
+        Where we process data, the lawful basis is performing the service you asked for
+        (sync, flyer extraction you start) and, for optional features such as barcode
+        lookups and price sharing, your consent, which you can withdraw in Settings at any
+        time.
+      </p>
+
+      <h2 id="children">12. Children</h2>
+      <p>
+        PantryRun is a household tool intended for people aged 13 and over. It is not
+        directed at young children, and we do not knowingly collect personal information
+        from them.
+      </p>
+
+      <h2 id="transfers">13. Where data goes</h2>
+      <p>
+        If your family runs its own relay, your data goes only where you put it. The
+        PantryRun relay currently runs on hardware in Ontario, Canada, reached through
+        Cloudflare's global network; if it moves to a cloud provider, this section will
+        name the provider and region. Price data is read from a database hosted in the
+        United States. Flyer images may be processed by Alibaba Cloud in Singapore or
+        mainland China (see §7). Barcode lookups are answered by Open Food Facts in the
+        European Union (and, where configured, USDA in the United States). Because list
+        contents are encrypted before they leave your device and we do not hold the keys,
+        a change of jurisdiction does not expose them.
+      </p>
+
+      <h2 id="changes">14. Changes</h2>
+      <p>
+        If this policy changes, the effective date above changes with it. Any change that
+        widens what the app collects will be announced in the app before it takes effect,
+        not applied quietly. Previous versions are available on request.
+      </p>
+
+      <h2 id="contact">15. Contact</h2>
+      <p>
+        Privacy questions and requests:
+        <a href="mailto:privacy@pantryrun.app">privacy@pantryrun.app</a><br />
+        Anything else: <a href="mailto:support@pantryrun.app">support@pantryrun.app</a>
+      </p>
+      <p>
+        We aim to answer within 30 days, which is the deadline Canadian and European law
+        sets.
       </p>
     </div>
 
@@ -284,7 +507,7 @@
 
     <div class="card" id="terms">
       <h1>Terms of Service</h1>
-      <p class="subtitle">PantryRun — Last updated: July 28, 2026</p>
+      <p class="subtitle">PantryRun — Last updated: October 11, 2026</p>
 
       <h2>1. Acceptance</h2>
       <p>
@@ -295,9 +518,10 @@
       <h2>2. Description of Service</h2>
       <p>
         PantryRun is a grocery list application that supports individual and family use.
-        Features include encrypted local storage, optional family sharing via a
-        self-hosted relay server, optional local price matching, flyer scanning,
-        and optional barcode lookups.
+        Features include encrypted local storage, optional family sharing through
+        a relay server (by default the free relay operated by PantryRun, or one you
+        host yourself), optional local price matching, flyer scanning, optional
+        barcode lookups, and an optional PantryRun Plus subscription.
       </p>
 
       <h2>3. Self-Hosted Relay — No Uptime Guarantee</h2>
@@ -317,12 +541,15 @@
         your server's security, backups, and availability.
       </p>
 
-      <h2>4. Managed Relay Tier</h2>
+      <h2>4. The PantryRun Relay</h2>
       <p>
-        This version of PantryRun does <strong>not</strong> offer a hosted
-        ("managed") relay tier — family sharing works exclusively through a relay
-        server you host yourself. If a hosted tier is offered in a future version,
-        these terms and the privacy policy will be updated before it launches.
+        By default the app syncs through a relay operated by PantryRun, free of
+        charge. It is provided "as-is", without any guarantee of uptime,
+        durability or data retention: undelivered encrypted updates are deleted
+        automatically after 30 days, and a relay is a delivery mechanism, not a
+        backup. We may limit or withdraw access for anyone who attacks, overloads
+        or abuses it. What it can and cannot see is described in the privacy
+        policy above; you can switch to a self-hosted relay at any time.
       </p>
 
       <h2>5. Acceptable Use</h2>
@@ -394,8 +621,8 @@
       <h2>12. Contact</h2>
       <p>
         Questions about these terms?<br />
-        Email: <a href="mailto:legal@groceryapp.app">legal@groceryapp.app</a><br />
-        Website: <a href="https://groceryapp.app">groceryapp.app</a>
+        Email: <a href="mailto:support@pantryrun.app">support@pantryrun.app</a><br />
+        Website: <a href="https://www.pantryrun.app">www.pantryrun.app</a>
       </p>
     </div>
 

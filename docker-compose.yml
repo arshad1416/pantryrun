@@ -2,6 +2,13 @@
 # docker compose up -d          # Start relay + optional price adapter
 # docker compose down           # Stop everything
 # docker compose build --pull   # Rebuild with fresh base images
+#
+# Hosted PantryRun relay (relay.pantryrun.app behind a Cloudflare Tunnel):
+#   cp .env.hosted.example .env   # fill in TUNNEL_TOKEN, TURSO_READ_TOKEN, …
+#   docker compose --profile hosted up -d
+# Step-by-step: GroceryApp/docs/deploy-hosted-relay.md. Without --profile
+# hosted and without a .env, this file behaves exactly as the self-host stack
+# it always was (every variable below defaults to the self-host value).
 
 services:
   # ──────────────────────────────────────────────
@@ -18,21 +25,35 @@ services:
     container_name: groceryapp-relay
     restart: unless-stopped
     ports:
-      - "8080:8080"    # WebSocket sync (auth via WS message) + REST (health, enroll, stats, token issuer)
-      - "8081:8081"    # Anonymous pool API (identity-free contributions; see POOL_PORT)
+      # RELAY_BIND=127.0.0.1 (hosted .env) keeps the relay off the LAN: the
+      # tunnel reaches it over the compose network, and with TRUST_PROXY=true a
+      # directly reachable port would let LAN hosts forge X-Forwarded-For.
+      - "${RELAY_BIND:-0.0.0.0}:8080:8080"    # WebSocket sync (auth via WS message) + REST (health, enroll, stats, token issuer)
+      - "${RELAY_BIND:-0.0.0.0}:8081:8081"    # Anonymous pool API (identity-free contributions; see POOL_PORT)
+    # Linux has no host.docker.internal by default; this maps it to the host so
+    # OLLAMA_URL below can reach an Ollama running on the Pi itself.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - NODE_ENV=production
       - RELAY_PORT=8080
       - RATE_LIMIT_MESSAGES=100
       - MAX_CLIENTS_PER_FAMILY=50
-      - MAX_FAMILIES=100
+      - MAX_FAMILIES=${MAX_FAMILIES:-100}
       - MAX_DEVICES_PER_FAMILY=20
+      # Behind a reverse proxy / Cloudflare Tunnel, per-IP rate limits must key
+      # on X-Forwarded-For (rightmost entry, TRUSTED_PROXY_HOPS from the right),
+      # not on the proxy's address. Self-host default: off. Hosted .env: on.
+      - TRUST_PROXY=${TRUST_PROXY:-false}
+      - TRUSTED_PROXY_HOPS=${TRUSTED_PROXY_HOPS:-1}
       # Pool isolation: serve the anonymous contribution pool on its own port
       # so it can be published under a SEPARATE ORIGIN (e.g. pool.example.com)
       # from the authenticated relay/token-issuer (relay.example.com).
       # See relay-server/POOL-ISOLATION.md. Set POOL_PORT=8080 to serve both
-      # on one origin (NOT recommended for a public community pool).
-      - POOL_PORT=8081
+      # on one origin (NOT recommended for a public community pool). The hosted
+      # .env sets 8080: today's app reads pool prices from the relay origin, so
+      # a separate pool origin would break that (see deploy-hosted-relay.md).
+      - POOL_PORT=${POOL_PORT:-8081}
       # Blind-RSA token issuer + pool verification keys. Without these a
       # default deploy returns 500 on token issuance and pool contribution.
       # Generate the pair locally BEFORE `docker compose up`:
@@ -48,7 +69,11 @@ services:
       # vision model (default model: qwen2.5-vl:7b).
       # Managed (paid): set QWEN_API_KEY for DashScope qwen-vl-max instead.
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434/api/generate}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5-vl:7b}
       - QWEN_API_KEY=${QWEN_API_KEY:-}
+      # Empty = the client's default (mainland-China DashScope endpoint). The
+      # hosted .env points this at the international (Singapore) endpoint.
+      - QWEN_BASE_URL=${QWEN_BASE_URL:-}
       # Live prices (GET /api/prices/{deals,shelf}): the relay reads the
       # operator's scraper database (flipp_deals, store_prices) server-side.
       # Use a READ-ONLY token: `turso db tokens create <db> --read-only`.
@@ -95,6 +120,34 @@ services:
         limits:
           cpus: "0.5"
           memory: "256M"
+
+  # ──────────────────────────────────────────────
+  # Cloudflare Tunnel — publishes the relay as https://relay.pantryrun.app
+  # (hosted profile only; never starts in a plain `docker compose up`).
+  # Outbound-only: no router port-forwarding, no public IP needed. The public
+  # hostname → http://relay:8080 route (WebSockets included) is configured in
+  # the Cloudflare Zero Trust dashboard; the container only needs the token.
+  # ──────────────────────────────────────────────
+  cloudflared:
+    profiles: ["hosted"]
+    # Pin to the version you first pull (`docker image inspect`), then bump
+    # deliberately; `latest` here only so a fresh setup cannot 404 on a tag.
+    image: cloudflare/cloudflared:latest
+    container_name: pantryrun-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # From .env. (Not `:?`-required: compose interpolates every service, so
+      # that would break a plain self-host `docker compose up`.)
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+    depends_on:
+      relay:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: "128M"
 
 networks:
   default:

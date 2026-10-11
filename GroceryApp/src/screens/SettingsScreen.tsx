@@ -2,10 +2,10 @@
  * Settings Screen — two-tier hosting configuration.
  *
  * Provides:
- *  - Tier selector (self-hosted / managed) as a segmented control
- *  - Relay URL input with "Test Connection" button
- *  - Pairing code display (QR code) for self-hosted
- *  - Managed tier: subscription key input + plan info
+ *  - Tier selector (PantryRun relay / self-hosted) as a segmented control
+ *  - Relay URL input with "Test Connection" button (read-only on the hosted relay)
+ *  - Family invite / pairing code display (QR code) for either tier
+ *  - Hosted tier: what the free PantryRun relay does and does not see
  *  - Toggle switches for opt-in features
  *  - Local AI endpoint input (self-hosted only)
  *
@@ -30,8 +30,11 @@ import {
   getSettings,
   updateSettings,
   testRelayConnection,
-  setHostingTier,
+  selectHostedRelay,
+  selectSelfHostedRelay,
+  HOSTED_RELAY_URL,
 } from '../config/settings';
+import { getRelayHttpBaseUrl } from '../pricing/relay-client';
 import { getDeviceId } from '../identity/device';
 import type { AppSettings, HostingTier, ConnectionStatus } from '../types';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -56,14 +59,16 @@ import PlusPaywall, { usePlusPriceLabel, openManageSubscriptions } from '../comp
 import { themeColors } from '../components/groceryTheme';
 
 /**
- * The paid "Managed" hosting tier is hidden in v1: there is no in-app way to
- * purchase it, and Apple 3.1.1 requires digital services sold for use in-app
- * to go through In-App Purchase — an un-buyable "subscription key" field is a
- * rejection magnet. v1 ships self-hosted-only. Re-enable together with real
- * IAP (see docs/MONETIZATION.md); the settings field and tier plumbing are
- * kept intact underneath.
+ * The "managed" tier is the FREE PantryRun-operated relay
+ * (wss://relay.pantryrun.app — docs/deploy-hosted-relay.md) and is the default
+ * for new installs; self-hosting stays selectable.
+ *
+ * It is free, so nothing about it is sold: the old un-buyable "subscription
+ * key" input is NOT rendered (Apple 3.1.1 — a visible purchase path with no
+ * IAP behind it, next to the real Plus IAP, is a rejection magnet). The
+ * managedSubscriptionKey setting is kept intact underneath, unused.
  */
-const MANAGED_TIER_ENABLED = false;
+const MANAGED_TIER_ENABLED = true;
 
 /**
  * Cloud voice-assistant linking (Alexa / Google Assistant) is disabled in v1.
@@ -235,9 +240,9 @@ export default function SettingsScreen({ navigation }: Props) {
 
   const getRelayHttpUrl = useCallback(() => {
     if (!settings) return '';
-    const proto = settings.relayUrl.startsWith('wss:') ? 'https:' : 'http:';
-    const host = settings.relayUrl.replace(/^wss?:\/\//, '');
-    return `${proto}//${host}:${settings.relayPort}`;
+    // Shared helper: appends the port only when the URL carries none, so a
+    // pasted ws://host:8080 no longer becomes host:8080:8080.
+    return getRelayHttpBaseUrl() ?? '';
   }, [settings]);
 
   const handleLinkVoice = useCallback(async () => {
@@ -329,6 +334,12 @@ export default function SettingsScreen({ navigation }: Props) {
       setContributeEnabled(s.contributeEnabled ?? false);
       setContributeStoreGranularity(s.contributeStoreGranularity ?? 'region');
       setContributeConsentShown(s.contributeConsentShown ?? false);
+      // Reflect the persisted adapter switches instead of hard-coded states.
+      setCrowdEnabled(priceRegistry.isAdapterEnabled('crowdsourced'));
+      setInstacartEnabled(priceRegistry.isAdapterEnabled('instacart'));
+      setScrapingEnabled(
+        (s as any).scrapingEnabled === true && priceRegistry.isAdapterEnabled('scraping'),
+      );
       setLoaded(true);
     })();
   }, []);
@@ -340,10 +351,16 @@ export default function SettingsScreen({ navigation }: Props) {
   }, []);
 
   // Tier switch handler
+  // Switching tier also moves the relay URL: the hosted tier pins ours, and
+  // self-hosted keeps a custom URL or asks for one.
   const handleTierChange = useCallback(
     async (tier: string) => {
-      const updated = await setHostingTier(tier as HostingTier);
+      const updated =
+        (tier as HostingTier) === 'managed'
+          ? await selectHostedRelay()
+          : await selectSelfHostedRelay();
       setSettingsState(updated);
+      setConnectionStatus('disconnected');
     },
     [],
   );
@@ -380,8 +397,8 @@ export default function SettingsScreen({ navigation }: Props) {
   }
 
   const deviceId = getDeviceId();
-  // With the managed tier hidden, everyone gets the self-hosted experience —
-  // including anyone whose stored settings still say 'managed'.
+  // MANAGED_TIER_ENABLED is on, so the stored tier decides. (Kept as an
+  // expression so turning the flag off again restores self-hosted-only.)
   const isSelfHosted = !MANAGED_TIER_ENABLED || settings.hostingTier === 'self_hosted';
 
   return (
@@ -393,14 +410,14 @@ export default function SettingsScreen({ navigation }: Props) {
         <Text style={[styles.title, { color: theme.text }]}>Settings</Text>
       </View>
 
-      {/* ── Tier Selector (hidden in v1 — see MANAGED_TIER_ENABLED) ──── */}
+      {/* ── Tier Selector (see MANAGED_TIER_ENABLED) ─────────────────── */}
       {MANAGED_TIER_ENABLED && (
       <View style={[styles.section, { backgroundColor: theme.cardBg, borderColor: theme.border }]}>
-        <Text style={[styles.sectionTitle, { color: theme.text }]}>Hosting Tier</Text>
+        <Text style={[styles.sectionTitle, { color: theme.text }]}>Sync Server</Text>
         <SegmentedControl
           options={[
+            { label: 'PantryRun (Free)', value: 'managed' },
             { label: 'Self-Hosted', value: 'self_hosted' },
-            { label: 'Managed', value: 'managed' },
           ]}
           selected={settings.hostingTier}
           onSelect={handleTierChange}
@@ -434,27 +451,32 @@ export default function SettingsScreen({ navigation }: Props) {
       <View style={[styles.section, { backgroundColor: theme.cardBg, borderColor: theme.border }]}>
         <Text style={[styles.sectionTitle, { color: theme.text }]}>Relay Server</Text>
 
+        {/* Hosted tier: the URL is ours and shown read-only (no onChangeText).
+            Self-hosted: free-form, e.g. ws://relay.home.arpa + 8080, or a
+            wss:// host + 443. */}
         <SettingsRow
           label="WebSocket URL"
-          value={settings.relayUrl}
-          onChangeText={(v) => handleUpdate({ relayUrl: v })}
-          placeholder="ws://localhost"
+          value={settings.relayUrl || (isSelfHosted ? '' : HOSTED_RELAY_URL)}
+          onChangeText={isSelfHosted ? (v) => handleUpdate({ relayUrl: v }) : undefined}
+          placeholder="ws://relay.home.arpa"
           keyboardType="url"
           theme={theme}
           isDark={isDark}
         />
 
-        <SettingsRow
-          label="Port"
-          value={String(settings.relayPort)}
-          onChangeText={(v) =>
-            handleUpdate({ relayPort: parseInt(v, 10) || 8080 })
-          }
-          placeholder="8080"
-          keyboardType="numeric"
-          theme={theme}
-          isDark={isDark}
-        />
+        {isSelfHosted && (
+          <SettingsRow
+            label="Port"
+            value={String(settings.relayPort)}
+            onChangeText={(v) =>
+              handleUpdate({ relayPort: parseInt(v, 10) || 8080 })
+            }
+            placeholder="8080"
+            keyboardType="numeric"
+            theme={theme}
+            isDark={isDark}
+          />
+        )}
 
         <TouchableOpacity
           style={[
@@ -480,13 +502,14 @@ export default function SettingsScreen({ navigation }: Props) {
         </TouchableOpacity>
       </View>
 
-      {/* ── Self-Hosted: Pairing Code ────────────────────────────────── */}
-      {isSelfHosted && (
+      {/* ── Pairing Code / family invite — needed on either tier ────────── */}
+      {(isSelfHosted || MANAGED_TIER_ENABLED) && (
         <View style={[styles.section, { backgroundColor: theme.cardBg, borderColor: theme.border }]}>
           <Text style={[styles.sectionTitle, { color: theme.text }]}>Pairing Code</Text>
           <Text style={[styles.sectionDescription, { color: theme.secondaryText }]}>
-            Share this code with other family members to pair with your
-            self-hosted relay.
+            {isSelfHosted
+              ? 'Share this code with other family members to pair with your self-hosted relay.'
+              : 'Share this code with other family members so their devices join your family on the PantryRun relay.'}
           </Text>
           <Text style={[styles.pairingCodeBox, { backgroundColor: isDark ? '#0B0F19' : '#f0f0f0', color: theme.text }]}>
             {settings.pairingCode || 'Generate pairing code from setup screen'}
@@ -549,21 +572,16 @@ export default function SettingsScreen({ navigation }: Props) {
       {/* ── Managed Tier: Subscription ───────────────────────────────── */}
       {!isSelfHosted && (
         <View style={[styles.section, { backgroundColor: theme.cardBg, borderColor: theme.border }]}>
-          <Text style={[styles.sectionTitle, { color: theme.text }]}>Managed Subscription</Text>
-          <SettingsRow
-            label="Subscription Key"
-            value={settings.managedSubscriptionKey}
-            onChangeText={(v) => handleUpdate({ managedSubscriptionKey: v })}
-            placeholder="Enter your subscription key"
-            secureTextEntry
-            theme={theme}
-            isDark={isDark}
-          />
+          <Text style={[styles.sectionTitle, { color: theme.text }]}>PantryRun Relay</Text>
           <Text style={[styles.planInfo, { color: theme.secondaryText }]}>
-            Plan: Managed Relay + Encrypted Sync
+            Free • End-to-end encrypted sync
           </Text>
           <Text style={[styles.tierDescription, { color: theme.secondaryText }]}>
-            Managed: Price queries are anonymized through our relay. Item names are hashed.
+            Your lists are encrypted on this device before they reach our relay, so we
+            can't read them. The relay does see routing details (family, list and device
+            IDs, timing and message sizes) and keeps encrypted updates for up to 30 days
+            so offline devices can catch up. Flyer photos you choose to upload are not
+            end-to-end encrypted. Prefer your own server? Switch to Self-Hosted above.
           </Text>
         </View>
       )}
@@ -891,7 +909,9 @@ export default function SettingsScreen({ navigation }: Props) {
         <View style={styles.toggleRow}>
           <Text style={[styles.toggleLabel, { color: theme.text }]}>Crowd-Sourced</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Text style={{ fontSize: 11, color: '#10B981' }}>● Active</Text>
+            <Text style={{ fontSize: 11, color: crowdEnabled ? '#10B981' : theme.secondaryText }}>
+              {crowdEnabled ? '● On (this device)' : '○ Off'}
+            </Text>
             <Switch
               value={crowdEnabled}
               onValueChange={async (v) => {
@@ -911,7 +931,7 @@ export default function SettingsScreen({ navigation }: Props) {
               fontSize: 11,
               color: instacartAdapter.isAvailable() ? '#10B981' : theme.secondaryText,
             }}>
-              {instacartAdapter.isAvailable() ? '● Connected' : '○ Not configured'}
+              {instacartAdapter.isAvailable() ? '● Connected' : '○ Needs an API key'}
             </Text>
             <Switch
               value={instacartEnabled}
@@ -931,7 +951,11 @@ export default function SettingsScreen({ navigation }: Props) {
           </Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <Text style={{ fontSize: 11, color: theme.secondaryText }}>
-              {scrapingEnabled ? '● On' : '○ Off'}
+              {!isSelfHosted
+                ? '○ Self-host only'
+                : scrapingEnabled
+                  ? '● On · no sources yet'
+                  : '○ Off'}
             </Text>
             <Switch
               value={scrapingEnabled && isSelfHosted}
@@ -1018,7 +1042,7 @@ export default function SettingsScreen({ navigation }: Props) {
       <View style={[styles.section, { backgroundColor: theme.cardBg, borderColor: '#f44336' }]}>
         <Text style={[styles.sectionTitle, { color: '#f44336' }]}>Danger Zone</Text>
         <Text style={[styles.sectionDescription, { color: theme.secondaryText }]}>
-          Attempt to delete local lists, settings, encryption keys, and device identity this install can address. Some secure-storage entries may remain.
+          Deletes the lists, settings, encryption keys, and device identity stored on this device. A few secure-storage entries from earlier families or passkeys may remain, and copies on other family devices or the relay are not affected.
         </Text>
         <TouchableOpacity
           style={[styles.clearPricesBtn, { borderColor: '#f44336', backgroundColor: '#f44336' }]}

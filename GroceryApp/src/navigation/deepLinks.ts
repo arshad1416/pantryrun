@@ -1,13 +1,16 @@
 /**
  * Deep linking configuration for GroceryApp.
  *
- * Handles `groceryapp://invite?token=...` URLs for family invite flows,
- * and `https://groceryapp.app/invite?token=*** universal links.
+ * Handles `groceryapp://invite?token=...` URLs for family invite flows (the
+ * scheme every shipped build generates, so old invites keep working), the
+ * newer `pantryrun://` alias, and `https://pantryrun.app/invite?token=...` /
+ * `https://www.pantryrun.app/invite?token=...` universal / app links.
  * Also supports standard navigation paths.
  *
  * Universal link setup:
- *   iOS: apple-app-site-association served at /.well-known/
- *   Android: assetlinks.json served at /.well-known/
+ *   iOS: apple-app-site-association served at /.well-known/ on BOTH hosts
+ *   Android: assetlinks.json served at /.well-known/ on BOTH hosts
+ *   (ready-to-host copies + instructions: site/README.md)
  *   Relay server: invite-redirect.html hosted at relay domain /invite?token=...
  */
 
@@ -29,8 +32,16 @@ export type RootStackParamList = {
 
 // ─── Deep Link Config ───────────────────────────────────────────────────────
 
+/** Universal / app link host for HTTPS invites (apex; www is accepted too). */
+export const INVITE_LINK_HOST = 'https://pantryrun.app';
+
 export const linkingConfig: LinkingOptions<RootStackParamList> = {
-  prefixes: ['groceryapp://', 'https://groceryapp.app'],
+  prefixes: [
+    'groceryapp://',
+    'pantryrun://',
+    'https://pantryrun.app',
+    'https://www.pantryrun.app',
+  ],
   config: {
     screens: {
       Home: '',
@@ -64,7 +75,8 @@ export const linkingConfig: LinkingOptions<RootStackParamList> = {
  *
  * Supports:
  *   - groceryapp://invite?token=<token>
- *   - https://groceryapp.app/invite?token=...
+ *   - pantryrun://invite?token=<token>
+ *   - https://pantryrun.app/invite?token=... (or www.pantryrun.app)
  *   - https://relay.example.com/invite?token=*** (web redirect)
  *
  * @param url - The incoming URL to parse.
@@ -100,7 +112,7 @@ export function parseInviteUrl(url: string): { token?: string } {
 export function buildInviteUrl(token: string, useHttps?: boolean): string {
   const encoded = encodeURIComponent(token);
   if (useHttps) {
-    return `https://groceryapp.app/invite?token=${encoded}`;
+    return `${INVITE_LINK_HOST}/invite?token=${encoded}`;
   }
   return `groceryapp://invite?token=${encoded}`;
 }

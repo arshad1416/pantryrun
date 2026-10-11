@@ -1,6 +1,6 @@
 {
   "name": "groceryapp",
-  "version": "1.30.0",
+  "version": "1.31.0",
   "main": "index.ts",
   "dependencies": {
     "@cloudflare/blindrsa-ts": "^0.4.4",

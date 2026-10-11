@@ -98,8 +98,9 @@ const NETWORK_SECURITY_CONFIG_XML = `<?xml version="1.0" encoding="utf-8"?>
   <!-- Public endpoints the app calls: HTTPS only, no downgrade, and no
        inheritance of the cleartext exceptions above. -->
   <domain-config cleartextTrafficPermitted="false">
-    <!-- Invite / applink host and its subdomains. -->
-    <domain includeSubdomains="true">groceryapp.app</domain>
+    <!-- Invite / applink host and its subdomains, including the hosted
+         relay (relay.pantryrun.app, wss only). -->
+    <domain includeSubdomains="true">pantryrun.app</domain>
     <!-- USDA FoodData Central product lookups. -->
     <domain includeSubdomains="true">api.nal.usda.gov</domain>
     <!-- Open Food Facts product lookups. -->
