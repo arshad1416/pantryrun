@@ -29,12 +29,39 @@ const SETTINGS_CACHE_KEY = 'groceryapp.settings.cache';
 const DEVICE_SETTINGS_KEY = 'groceryapp.device.settings_key';
 const SETTINGS_AAD_CONTEXT = 'app_settings';
 
-const DEFAULT_RELAY_URL = 'ws://localhost';
-const DEFAULT_RELAY_PORT = 8080;
+/**
+ * The PantryRun-operated relay (free). It is the same content-blind relay
+ * self-hosters run (relay-server/), published at this hostname behind TLS —
+ * see docs/deploy-hosted-relay.md. Port 443 is explicit so every call site
+ * that joins `relayUrl` + `relayPort` (several append the port when the URL
+ * carries none) produces a valid `wss://relay.pantryrun.app:443` /
+ * `https://relay.pantryrun.app:443`, which is the default HTTPS port anyway.
+ */
+export const HOSTED_RELAY_URL = 'wss://relay.pantryrun.app';
+export const HOSTED_RELAY_PORT = 443;
+
+/**
+ * What a self-hosted relay listens on (relay-server RELAY_PORT). Used when a
+ * user switches from the hosted relay to self-hosted.
+ */
+export const SELF_HOSTED_RELAY_PORT = 8080;
+
+/**
+ * The pre-1.32 default. It never pointed at a working relay on a phone
+ * (localhost is the phone itself), so an install still carrying it exactly is
+ * migrated to the hosted relay once — see migrateLegacyRelayDefaultOnce.
+ */
+const LEGACY_DEFAULT_RELAY_URL = 'ws://localhost';
+const LEGACY_DEFAULT_RELAY_PORT = 8080;
+
+const DEFAULT_RELAY_URL = HOSTED_RELAY_URL;
+const DEFAULT_RELAY_PORT = HOSTED_RELAY_PORT;
 const DEFAULT_LOCAL_AI_ENDPOINT = 'http://localhost:1234';
 
 const DEFAULT_SETTINGS: AppSettings = {
-  hostingTier: 'self_hosted',
+  // New installs sync through the PantryRun relay; self-hosting stays one
+  // tap away in Settings → Hosting.
+  hostingTier: 'managed',
   relayUrl: DEFAULT_RELAY_URL,
   relayPort: DEFAULT_RELAY_PORT,
   pairingCode: '',
@@ -181,6 +208,36 @@ function resetRecoveryAcknowledgementOnce(settings: Record<string, unknown>): bo
   return true;
 }
 
+/** Marker so the legacy-default migration below runs at most once. */
+const HOSTED_RELAY_MIGRATION_KEY = 'hostedRelayDefaultMigrated';
+
+/**
+ * One-shot: move installs still on the old placeholder default
+ * (`ws://localhost`, port 8080, self-hosted tier) to the hosted relay.
+ *
+ * Only the exact untouched default is migrated: any URL or port the user typed
+ * — or that a scanned pairing code wrote — is left alone. The marker makes this
+ * fire once, so a user who later deliberately points at ws://localhost (an
+ * emulator dev setup) is not migrated again.
+ *
+ * Returns true if anything changed, so the caller re-persists.
+ */
+function migrateLegacyRelayDefaultOnce(settings: Record<string, unknown>): boolean {
+  if (settings[HOSTED_RELAY_MIGRATION_KEY] === true) return false;
+  settings[HOSTED_RELAY_MIGRATION_KEY] = true;
+  const port = settings.relayPort ?? LEGACY_DEFAULT_RELAY_PORT;
+  if (
+    settings.relayUrl === LEGACY_DEFAULT_RELAY_URL &&
+    port === LEGACY_DEFAULT_RELAY_PORT &&
+    (settings.hostingTier ?? 'self_hosted') === 'self_hosted'
+  ) {
+    settings.relayUrl = HOSTED_RELAY_URL;
+    settings.relayPort = HOSTED_RELAY_PORT;
+    settings.hostingTier = 'managed';
+  }
+  return true;
+}
+
 /**
  * Initialize the settings store. Must be called once at app startup.
  * Loads settings from secure store into cache, or populates defaults.
@@ -197,8 +254,12 @@ export async function initSettings(): Promise<AppSettings> {
     const reprompt = resetRecoveryAcknowledgementOnce(
       loaded as unknown as Record<string, unknown>,
     );
+    // Move the old ws://localhost placeholder default to the hosted relay.
+    const relayMigrated = migrateLegacyRelayDefaultOnce(
+      loaded as unknown as Record<string, unknown>,
+    );
     settingsCache = { ...DEFAULT_SETTINGS, ...loaded };
-    if (migrated || reprompt) {
+    if (migrated || reprompt || relayMigrated) {
       await persistSettings(settingsCache);
       if (migrated) console.log('[settings] ✓ Purged removed Turso fields from stored settings');
       if (reprompt) console.log('[settings] ✓ Recovery-phrase re-prompt armed (wordlist fix)');
@@ -251,6 +312,32 @@ export async function updateSettings(
  */
 export async function setHostingTier(tier: HostingTier): Promise<AppSettings> {
   return updateSettings({ hostingTier: tier });
+}
+
+/**
+ * Point this device at the PantryRun-hosted relay (tier + URL + port together).
+ */
+export async function selectHostedRelay(): Promise<AppSettings> {
+  return updateSettings({
+    hostingTier: 'managed',
+    relayUrl: HOSTED_RELAY_URL,
+    relayPort: HOSTED_RELAY_PORT,
+  });
+}
+
+/**
+ * Switch to self-hosting. A custom URL the user already entered is kept; the
+ * hosted URL is cleared so the user is prompted for their own relay instead of
+ * silently staying on ours.
+ */
+export async function selectSelfHostedRelay(): Promise<AppSettings> {
+  const current = getSettings();
+  const onHosted = current.relayUrl === HOSTED_RELAY_URL;
+  return updateSettings({
+    hostingTier: 'self_hosted',
+    relayUrl: onHosted ? '' : current.relayUrl,
+    relayPort: onHosted ? SELF_HOSTED_RELAY_PORT : current.relayPort,
+  });
 }
 
 /**
