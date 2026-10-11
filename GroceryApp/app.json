@@ -7,7 +7,10 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "scheme": "groceryapp",
+    "scheme": [
+      "groceryapp",
+      "pantryrun"
+    ],
     "plugins": [
       "@sentry/react-native/expo",
       [
@@ -29,7 +32,8 @@
       "buildNumber": "31",
       "supportsTablet": true,
       "associatedDomains": [
-        "applinks:groceryapp.app"
+        "applinks:pantryrun.app",
+        "applinks:www.pantryrun.app"
       ],
       "infoPlist": {
         "NSCameraUsageDescription": "Scan barcodes to add items to your grocery list, scan QR codes to join your family, and photograph store flyers for price extraction",
@@ -82,7 +86,9 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "permissions": ["POST_NOTIFICATIONS"],
+      "permissions": [
+        "POST_NOTIFICATIONS"
+      ],
       "intentFilters": [
         {
           "action": "VIEW",
@@ -90,7 +96,12 @@
           "data": [
             {
               "scheme": "https",
-              "host": "groceryapp.app",
+              "host": "pantryrun.app",
+              "pathPrefix": "/invite"
+            },
+            {
+              "scheme": "https",
+              "host": "www.pantryrun.app",
               "pathPrefix": "/invite"
             }
           ],
@@ -105,6 +116,10 @@
             {
               "scheme": "groceryapp",
               "host": "invite"
+            },
+            {
+              "scheme": "pantryrun",
+              "host": "invite"
             }
           ],
           "category": [
@@ -116,7 +131,9 @@
       "package": "com.shiftlogichq.pantryrun",
       "versionCode": 31,
       "packagingOptions": {
-        "pickFirst": ["**/libc++_shared.so"]
+        "pickFirst": [
+          "**/libc++_shared.so"
+        ]
       }
     },
     "web": {

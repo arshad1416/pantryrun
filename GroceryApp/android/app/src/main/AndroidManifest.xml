@@ -25,16 +25,19 @@
         <category android:name="android.intent.category.DEFAULT"/>
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="groceryapp"/>
+        <data android:scheme="pantryrun"/>
       </intent-filter>
       <intent-filter android:autoVerify="true" data-generated="true">
         <action android:name="android.intent.action.VIEW"/>
-        <data android:scheme="https" android:host="groceryapp.app" android:pathPrefix="/invite"/>
+        <data android:scheme="https" android:host="pantryrun.app" android:pathPrefix="/invite"/>
+        <data android:scheme="https" android:host="www.pantryrun.app" android:pathPrefix="/invite"/>
         <category android:name="android.intent.category.BROWSABLE"/>
         <category android:name="android.intent.category.DEFAULT"/>
       </intent-filter>
       <intent-filter data-generated="true">
         <action android:name="android.intent.action.VIEW"/>
         <data android:scheme="groceryapp" android:host="invite" android:pathPrefix="/"/>
+        <data android:scheme="pantryrun" android:host="invite" android:pathPrefix="/"/>
         <category android:name="android.intent.category.BROWSABLE"/>
         <category android:name="android.intent.category.DEFAULT"/>
       </intent-filter>

@@ -1,11 +1,16 @@
 # Deep Linking Setup — GroceryApp
 
+> **Current hosts (2026-10):** links use `pantryrun.app` **and** `www.pantryrun.app`
+> (both are in the iOS entitlements and the Android autoVerify filter), so the
+> association files must be served on both. Ready-to-host copies and deploy steps:
+> `site/README.md` at the repo root. `groceryapp.app` was never registered.
+
 ## Overview
 
 GroceryApp supports three deep linking mechanisms for invite flows:
 
-1. **Custom URL scheme** (`grocceryapp://invite?token=...`) — works when the app is already installed
-2. **Universal Links (iOS) / App Links (Android)** (`https://groceryapp.app/invite?token=...`) — seamless
+1. **Custom URL scheme** (`groceryapp://invite?token=...`, the scheme every build generates; `pantryrun://` is also registered) — works when the app is already installed
+2. **Universal Links (iOS) / App Links (Android)** (`https://pantryrun.app/invite?token=...`) — seamless
    open-in-app without the "open this page?" prompt
 3. **Web fallback page** (hosted on relay server) — detects when the app isn't installed and redirects
    to App Store / Google Play
@@ -21,7 +26,7 @@ app ownership.
 
 **File location in repo:** `ios/apple-app-site-association` (no `.json` extension)
 
-**Served at:** `https://groceryapp.app/.well-known/apple-app-site-association`
+**Served at:** `https://pantryrun.app/.well-known/apple-app-site-association`
 
 Before deploying:
 
@@ -49,7 +54,7 @@ Before deploying:
 
 **File location in repo:** `android/assetlinks.json`
 
-**Served at:** `https://groceryapp.app/.well-known/assetlinks.json`
+**Served at:** `https://pantryrun.app/.well-known/assetlinks.json`
 
 Before deploying:
 
@@ -73,7 +78,7 @@ Before deploying:
 3. Click **+** → **Associated Domains**
 4. Add:
    ```
-   applinks:groceryapp.app
+   applinks:pantryrun.app
    ```
 5. Also add the custom scheme:
    - Go to **Info** → **URL Types**
@@ -87,7 +92,7 @@ If using Expo, configure in `app.json`:
 {
   "expo": {
     "ios": {
-      "associatedDomains": ["applinks:groceryapp.app"],
+      "associatedDomains": ["applinks:pantryrun.app"],
       "bundleIdentifier": "com.shiftlogichq.pantryrun"
     }
   }
@@ -118,7 +123,7 @@ In `AndroidManifest.xml`, add intent filters for both the custom scheme and app 
     <action android:name="android.intent.action.VIEW" />
     <category android:name="android.intent.category.DEFAULT" />
     <category android:name="android.intent.category.BROWSABLE" />
-    <data android:scheme="https" android:host="groceryapp.app" android:pathPrefix="/invite" />
+    <data android:scheme="https" android:host="pantryrun.app" android:pathPrefix="/invite" />
   </intent-filter>
 
 </activity>
@@ -143,7 +148,7 @@ In `AndroidManifest.xml`, add intent filters for both the custom scheme and app 
             },
             {
               "scheme": "https",
-              "host": "groceryapp.app",
+              "host": "pantryrun.app",
               "pathPrefix": "/invite"
             }
           ],
@@ -203,7 +208,7 @@ Update these values in `<script>` at the bottom of `invite-redirect.html`:
 xcrun simctl openurl booted "grocceryapp://invite?token=test-token-123"
 
 # Test universal link
-xcrun simctl openurl booted "https://groceryapp.app/invite?token=test-token-123"
+xcrun simctl openurl booted "https://pantryrun.app/invite?token=test-token-123"
 ```
 
 ### Android Emulator
@@ -215,7 +220,7 @@ adb shell am start -W -a android.intent.action.VIEW \
 
 # Test app link
 adb shell am start -W -a android.intent.action.VIEW \
-  -d "https://groceryapp.app/invite?token=test-token-123"
+  -d "https://pantryrun.app/invite?token=test-token-123"
 ```
 
 ### Physical Device
@@ -229,7 +234,7 @@ adb shell am start -W -a android.intent.action.VIEW \
 Apple provides a validation tool. After deployment:
 
 ```bash
-curl -v https://groceryapp.app/.well-known/apple-app-site-association
+curl -v https://pantryrun.app/.well-known/apple-app-site-association
 ```
 
 Or use the [Apple App Site Association Validator](https://search.developer.apple.com/appsearch-validation-tool/) (requires Apple Developer login).
@@ -249,7 +254,7 @@ Or use the [Statement List Generator and Tester](https://developers.google.com/d
 | Purpose | URL Format |
 |---------|-----------|
 | Custom scheme invite | `grocceryapp://invite?token=***` |
-| Universal link invite | `https://groceryapp.app/invite?token=***` |
+| Universal link invite | `https://pantryrun.app/invite?token=***` |
 | Web fallback | `https://relay.example.com/invite?token=***` |
 
 ## 7. Troubleshooting
@@ -258,6 +263,6 @@ Or use the [Statement List Generator and Tester](https://developers.google.com/d
 |---------|-------------|-----|
 | `grocceryapp://` links don't open app | Scheme not registered | Add URL type in Xcode / intent filter in AndroidManifest |
 | Universal link shows web page instead of app | AASA file incorrect or not at correct path | Verify apple-app-site-association is served at `/.well-known/` with correct content-type |
-| "Cannot Open Page" on iOS | Associated domain not configured | Add `applinks:groceryapp.app` to Associated Domains entitlement |
+| "Cannot Open Page" on iOS | Associated domain not configured | Add `applinks:pantryrun.app` to Associated Domains entitlement |
 | Android auto-verify fails | Wrong SHA-256 fingerprint | Regenerate and update assetlinks.json |
 | Web fallback doesn't redirect to store | Store URLs not configured | Update `iosStoreUrl` and `androidStoreUrl` in invite-redirect.html |

@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Join a family list — PantryRun</title>
+<meta name="description" content="Open a PantryRun family invite." />
+<meta name="color-scheme" content="light dark" />
+<!-- The invite token is in the query string; keep it out of Referer headers. -->
+<meta name="referrer" content="no-referrer" />
+<meta name="robots" content="noindex" />
+<link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <a class="mark" href="/">Pantry<span>Run</span></a>
+    <nav>
+      <a href="/privacy">Privacy</a>
+      <a href="/terms">Terms</a>
+      <a href="/support">Support</a>
+    </nav>
+  </header>
+
+  <h1>You've been invited to a family list</h1>
+  <p class="lede">
+    If PantryRun is installed, tap the button to open the invite in the app.
+  </p>
+
+  <div class="card">
+    <p><a id="open" class="pill" href="#">Open in PantryRun</a></p>
+    <p id="missing" style="margin-bottom:0">
+      Don't have PantryRun yet? Get it on
+      <a id="ios" href="https://apps.apple.com/app/idREPLACE_WITH_APP_STORE_ID">the App Store</a> or
+      <a id="android" href="https://play.google.com/store/apps/details?id=com.shiftlogichq.pantryrun">Google Play</a>,
+      then come back and tap this link again.
+    </p>
+  </div>
+
+  <p>
+    You'll also need the family's 12-word recovery phrase from the person who invited
+    you. Invites are valid for 7 days and work for one device.
+    Trouble? See <a href="/support#invites">Support</a>.
+  </p>
+
+  <footer class="foot">
+    <a href="/privacy">Privacy Policy</a>
+    <a href="/terms">Terms of Service</a>
+    <a href="/support">Support</a>
+    <span class="spacer">© 2026 PantryRun</span>
+  </footer>
+
+</div>
+<script>
+  // Hand the token to the app through the custom scheme every PantryRun build
+  // registers (groceryapp://). Nothing is sent anywhere by this page.
+  (function () {
+    var token = new URLSearchParams(window.location.search).get('token') || '';
+    var open = document.getElementById('open');
+    if (!token) {
+      open.textContent = 'This invite link is incomplete';
+      open.removeAttribute('href');
+      return;
+    }
+    open.href = 'groceryapp://invite?token=' + encodeURIComponent(token);
+  })();
+</script>
+</body>
+</html>

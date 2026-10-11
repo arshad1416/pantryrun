@@ -1,5 +1,5 @@
 {
-  "_comment": "Serve this file (minus this _comment key) at https://groceryapp.app/.well-known/apple-app-site-association with Content-Type application/json. Replace TEAMID with the 10-character Apple Developer Team ID before deploying — Universal Links will not verify until then. The appID suffix must match the iOS bundle identifier (com.shiftlogichq.pantryrun).",
+  "_comment": "TEMPLATE. The ready-to-host copy (no _comment key) is site/.well-known/apple-app-site-association at the repo root; see site/README.md. Serve it at BOTH https://pantryrun.app/.well-known/apple-app-site-association and https://www.pantryrun.app/.well-known/apple-app-site-association (the entitlements list applinks:pantryrun.app and applinks:www.pantryrun.app), Content-Type application/json, no redirect. Replace TEAMID with the 10-character Apple Developer Team ID before deploying; Universal Links will not verify until then. The appID suffix must match the iOS bundle identifier (com.shiftlogichq.pantryrun).",
   "applinks": {
     "apps": [],
     "details": [
