@@ -390,7 +390,7 @@ export class SyncManager {
    *
    * A bare console.warn here is exactly how the app previously looked fine
    * while saving nothing (see fresh-install-persistence.test.ts). Sentry is
-   * dead in production and error-handler.ts is imported by nothing, so the
+   * dead in production and error-handler.ts only logs to the console, so the
    * only signal a user can see is the sync indicator: set the store's error
    * state, which SyncIndicator renders as a red dot plus the message. The
    * copy says "save", not "sync" — the failure is local persistence, and
