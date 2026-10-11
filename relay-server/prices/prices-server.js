@@ -16,6 +16,7 @@
  */
 
 const turso = require('./turso-reader');
+const region = require('./region');
 
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const MAX_ROWS = 5000;
@@ -170,23 +171,32 @@ async function handlePricesRequest(req, res, enrolledDevices, now = Date.now()) 
     return true;
   }
 
-  const key = `${kind}:${fsa}`;
+  // Scrapes cover one FSA per city; answer from the nearest covered one.
+  const sourceFsa = await region.resolveSourceFsa(kind, fsa, turso, now);
+  if (!sourceFsa) {
+    send(res, 200, {
+      kind, fsa, sourceFsa: null, fetchedAt: new Date(now).toISOString(), truncated: false, rows: [],
+    }, { 'Cache-Control': 'private, max-age=300' });
+    return true;
+  }
+
+  const key = `${kind}:${sourceFsa}`;
   const hit = cache.get(key);
   if (hit && now - hit.at < CACHE_TTL_MS) {
-    send(res, 200, hit.payload, { 'Cache-Control': 'private, max-age=300' });
+    send(res, 200, { ...hit.payload, fsa }, { 'Cache-Control': 'private, max-age=300' });
     return true;
   }
 
   const { sql, columns } = QUERIES[kind];
   let rows;
   try {
-    rows = await turso.query(sql, [`${fsa}%`]);
+    rows = await turso.query(sql, [`${sourceFsa}%`]);
   } catch (err) {
     // TursoError messages are safe (no URL, no token).
     console.warn(`[prices] ${kind} query failed for ${fsa}: ${err.message}`);
     if (hit) {
       // Serve the last good answer, saying so.
-      send(res, 200, { ...hit.payload, stale: true }, { 'Cache-Control': 'no-store' });
+      send(res, 200, { ...hit.payload, fsa, stale: true }, { 'Cache-Control': 'no-store' });
     } else {
       send(res, 502, { error: 'Price source unavailable' });
     }
@@ -197,6 +207,7 @@ async function handlePricesRequest(req, res, enrolledDevices, now = Date.now()) 
   const payload = {
     kind,
     fsa,
+    sourceFsa,
     fetchedAt: new Date(now).toISOString(),
     truncated,
     rows: rows.slice(0, MAX_ROWS).map((r) => pick(r, columns)),
@@ -216,6 +227,7 @@ function cleanPricesState(now = Date.now()) {
 function _resetPricesState() {
   cache.clear();
   rateBuckets.clear();
+  region._resetRegionState();
 }
 
 module.exports = {

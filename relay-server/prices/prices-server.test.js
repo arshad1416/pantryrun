@@ -129,12 +129,20 @@ describe('handlePricesRequest', () => {
       query: jest.fn(async (sql) => (sql.includes('flipp_deals') ? DEAL_ROWS : SHELF_ROWS)),
       TursoError: Error,
     }));
+    // Region resolution has its own suite below; here the requested FSA is the source.
+    jest.doMock('./region', () => ({
+      resolveSourceFsa: async (kind, fsa) => fsa,
+      _resetRegionState: () => {},
+    }));
     reader = require('./turso-reader');
     server = require('./prices-server');
     server._resetPricesState();
     enrolled = new Map([[TOKEN, { expiresAt: Date.now() + 60_000 }]]);
   });
-  afterEach(() => jest.dontMock('./turso-reader'));
+  afterEach(() => {
+    jest.dontMock('./turso-reader');
+    jest.dontMock('./region');
+  });
 
   async function call(url, opts) {
     const res = mockRes();
@@ -343,8 +351,14 @@ describe('relay /api/prices end to end (fake Turso)', () => {
     expect(shelf.status).toBe(200);
     expect((await shelf.json()).rows[0].store_name).toBe('No Frills');
 
-    expect(tursoCalls).toHaveLength(2);
+    // Region coverage lookups carry no user input; the data queries carry only the region.
+    const dataCalls = tursoCalls.filter((c) => !c.body.requests[0].stmt.sql.includes('coverage_fsa'));
+    expect(dataCalls).toHaveLength(2);
     for (const c of tursoCalls) {
+      expect(c.url).toBe('/v2/pipeline');
+      expect(c.auth).toBe(`Bearer ${READ_TOKEN}`);
+    }
+    for (const c of dataCalls) {
       expect(c.url).toBe('/v2/pipeline');
       expect(c.auth).toBe(`Bearer ${READ_TOKEN}`);
       expect(c.body.requests[0].stmt.args).toEqual([{ type: 'text', value: 'L0R%' }]);
@@ -463,5 +477,73 @@ describe('truncation flag', () => {
     // Exactly MAX_ROWS rows is a complete answer, not a truncated one.
     rowsToReturn = big(server.MAX_ROWS);
     expect((await ask()).truncated).toBe(false);
+  });
+});
+
+// ─── 4. region resolution ───────────────────────────────────────────────────
+
+describe('region resolution', () => {
+  const region = require('./region');
+
+  test('a covered FSA answers from itself', () => {
+    expect(region.nearestCovered('M5V', new Set(['M5V', 'L8P']))).toBe('M5V');
+  });
+
+  test('an uncovered Toronto FSA answers from the nearest scraped city FSA', () => {
+    expect(region.nearestCovered('M4C', new Set(['M5V', 'L8P', 'K1P']))).toBe('M5V');
+    expect(region.nearestCovered('L8B', new Set(['M5V', 'L8P', 'K1P']))).toBe('L8P');
+  });
+
+  test('nothing within range means no prices rather than a far-away city', () => {
+    // Thunder Bay is far beyond MAX_DISTANCE_KM of Toronto.
+    expect(region.nearestCovered('P7B', new Set(['M5V']))).toBeNull();
+    expect(region.nearestCovered('Z9Z', new Set(['M5V']))).toBeNull();
+  });
+
+  describe('handler', () => {
+    let server;
+    let query;
+    beforeEach(() => {
+      jest.resetModules();
+      query = jest.fn(async (sql, args) => {
+        if (sql.includes('coverage_fsa')) return [{ coverage_fsa: 'M5V' }, { coverage_fsa: 'K1P' }];
+        return args[0] === 'M5V%' ? SHELF_ROWS : [];
+      });
+      jest.doMock('./turso-reader', () => ({ isConfigured: () => true, query, TursoError: Error }));
+      server = require('./prices-server');
+      server._resetPricesState();
+    });
+    afterEach(() => jest.dontMock('./turso-reader'));
+
+    const enrolled = new Map([['t', { expiresAt: Date.now() + 3_600_000 }]]);
+    async function ask(fsa) {
+      const res = mockRes();
+      await server.handlePricesRequest(mockReq(`/api/prices/shelf?fsa=${fsa}`, { token: 't' }), res, enrolled);
+      return res.body;
+    }
+
+    test('queries the nearest covered FSA and says which it used', async () => {
+      const body = await ask('M4C');
+      expect(body.fsa).toBe('M4C');
+      expect(body.sourceFsa).toBe('M5V');
+      expect(body.rows.length).toBeGreaterThan(0);
+      expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM store_prices'), ['M5V%']);
+    });
+
+    test('neighbours share one cached answer and one coverage read', async () => {
+      await ask('M4C');
+      const second = await ask('M6K');
+      expect(second.fsa).toBe('M6K');
+      expect(second.sourceFsa).toBe('M5V');
+      expect(query.mock.calls.filter(([sql]) => sql.includes('coverage_fsa'))).toHaveLength(1);
+      expect(query.mock.calls.filter(([sql]) => !sql.includes('coverage_fsa'))).toHaveLength(1);
+    });
+
+    test('out of range: empty rows and a null sourceFsa, without a data query', async () => {
+      const body = await ask('V6B');
+      expect(body.sourceFsa).toBeNull();
+      expect(body.rows).toEqual([]);
+      expect(query.mock.calls.filter(([sql]) => !sql.includes('coverage_fsa'))).toHaveLength(0);
+    });
   });
 });
