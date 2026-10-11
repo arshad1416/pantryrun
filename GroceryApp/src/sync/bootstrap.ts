@@ -54,11 +54,16 @@ async function provisionFirstRun(): Promise<Uint8Array | null> {
  * connect the sync WebSocket.
  *
  * @returns 'no-key' | 'local-only' | 'connected' — for logging/tests.
+ * @throws KeyReadError when a master key is stored but cannot be read. That
+ *   is not a first launch: provisioning here would mint a new key and phrase
+ *   over the real one. App.tsx shows its error screen (Retry, or restore
+ *   with the recovery phrase) instead.
  */
 export async function bootstrapSync(): Promise<'no-key' | 'local-only' | 'connected' | 'cancelled'> {
   const beforeHydration = syncManager.getSessionGeneration();
   const { getMasterKey } = await import('../crypto');
   const { useSyncStore } = await import('../state/useSyncStore');
+  // Throws KeyReadError on a failed read — deliberately not caught here.
   let masterKey = await getMasterKey();
   if (!masterKey) {
     // First launch — mint identity and keys before anything is stored.
