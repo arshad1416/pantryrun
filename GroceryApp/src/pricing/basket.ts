@@ -76,6 +76,11 @@ function offerList(o: Offers | undefined): PriceResult[] {
   return Array.isArray(o) ? o : [o];
 }
 
+/** The best-matched (first) candidate of an item's offers at a store. */
+export function primaryOffer(o: Offers | undefined): PriceResult | undefined {
+  return offerList(o)[0];
+}
+
 // ─── Analysis (per item, per store) ─────────────────────────────────────────
 
 export type RejectionReason = IneligibleReason | PurchaseFailure;

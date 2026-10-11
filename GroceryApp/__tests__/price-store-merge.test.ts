@@ -4,7 +4,7 @@
  * Tests the merge logic that converts perStorePrices (storeId → itemId → PriceResult)
  * into a flat prices map.
  *
- * Requires mocking of settings (pricingOptedIn gate) and registry (getAllPrices).
+ * Requires mocking of settings (pricingOptedIn gate) and registry (getAllCandidates).
  *
  * Run: npx jest __tests__/price-store-merge.test.ts
  */
@@ -21,7 +21,7 @@ jest.mock('../src/config/settings', () => ({
 
 jest.mock('../src/pricing/registry', () => ({
   priceRegistry: {
-    getAllPrices: jest.fn(),
+    getAllCandidates: jest.fn(),
   },
 }));
 
@@ -34,6 +34,7 @@ jest.mock('../src/pricing/crowdsourced', () => ({
 import { usePriceStore } from '../src/pricing/price-store';
 import { priceRegistry } from '../src/pricing/registry';
 import type { PriceResult } from '../src/pricing/types';
+import { primaryOffer } from '../src/pricing/basket';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -59,11 +60,11 @@ function mockRegistryForStore(
   storeId: string,
   items: { id: string; name: string; price: number }[],
 ): void {
-  const map = new Map<string, PriceResult>();
+  const map = new Map<string, PriceResult[]>();
   for (const item of items) {
-    map.set(item.name, makePrice(item.price));
+    map.set(item.name, [makePrice(item.price)]);
   }
-  (priceRegistry.getAllPrices as any).mockImplementation(
+  (priceRegistry.getAllCandidates as any).mockImplementation(
     async (_names: string[], sid: string) => {
       if (sid === storeId) return map;
       return new Map();
@@ -77,13 +78,13 @@ function mockRegistryForStores(
     { id: string; name: string; price: number }[]
   >,
 ): void {
-  (priceRegistry.getAllPrices as any).mockImplementation(
+  (priceRegistry.getAllCandidates as any).mockImplementation(
     async (_names: string[], storeId: string) => {
       const items = storeMap[storeId];
       if (!items) return new Map();
-      const map = new Map<string, PriceResult>();
+      const map = new Map<string, PriceResult[]>();
       for (const item of items) {
-        map.set(item.name, makePrice(item.price));
+        map.set(item.name, [makePrice(item.price)]);
       }
       return map;
     },
@@ -96,7 +97,7 @@ beforeEach(() => {
   // Reset store state and mock calls before each test
   usePriceStore.getState().clearPrices();
   usePriceStore.getState().clearPerStorePrices();
-  (priceRegistry.getAllPrices as any).mockClear();
+  (priceRegistry.getAllCandidates as any).mockClear();
 });
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -169,8 +170,8 @@ describe('loadPricesForAllStores — same item in multiple stores', () => {
     expect(state.prices.milk!.price).toBeCloseTo(3.49, 2);
 
     // Per-store still has both
-    expect(state.perStorePrices.store_a.milk!.price).toBeCloseTo(4.99, 2);
-    expect(state.perStorePrices.store_b.milk!.price).toBeCloseTo(3.49, 2);
+    expect(primaryOffer(state.perStorePrices.store_a.milk)!.price).toBeCloseTo(4.99, 2);
+    expect(primaryOffer(state.perStorePrices.store_b.milk)!.price).toBeCloseTo(3.49, 2);
   });
 });
 
@@ -200,7 +201,7 @@ describe('loadPricesForAllStores — store with no prices', () => {
 
 describe('loadPricesForAllStores — empty items list', () => {
   it('loads nothing when items array is empty', async () => {
-    // No need to mock — empty items means getAllPrices is never called meaningfully
+    // No need to mock — empty items means getAllCandidates is never called meaningfully
     await usePriceStore.getState().loadPricesForAllStores([], ['store_a']);
 
     const state = usePriceStore.getState();
@@ -313,24 +314,24 @@ describe('loadPricesForAllStores — perStorePrices granularity', () => {
 
     // Walmart: milk + eggs
     expect(Object.keys(psp.store_walmart)).toEqual(['milk', 'eggs']);
-    expect(psp.store_walmart.milk.price).toBeCloseTo(4.99, 2);
-    expect(psp.store_walmart.eggs.price).toBeCloseTo(3.99, 2);
+    expect(primaryOffer(psp.store_walmart.milk)!.price).toBeCloseTo(4.99, 2);
+    expect(primaryOffer(psp.store_walmart.eggs)!.price).toBeCloseTo(3.99, 2);
 
     // Target: milk + bread
     expect(Object.keys(psp.store_target)).toEqual(['milk', 'bread']);
-    expect(psp.store_target.milk.price).toBeCloseTo(5.49, 2);
-    expect(psp.store_target.bread.price).toBeCloseTo(2.49, 2);
+    expect(primaryOffer(psp.store_target.milk)!.price).toBeCloseTo(5.49, 2);
+    expect(primaryOffer(psp.store_target.bread)!.price).toBeCloseTo(2.49, 2);
 
     // Wegmans: eggs + butter
     expect(Object.keys(psp.store_wegmans)).toEqual(['eggs', 'butter']);
-    expect(psp.store_wegmans.eggs.price).toBeCloseTo(2.99, 2);
-    expect(psp.store_wegmans.butter.price).toBeCloseTo(4.49, 2);
+    expect(primaryOffer(psp.store_wegmans.eggs)!.price).toBeCloseTo(2.99, 2);
+    expect(primaryOffer(psp.store_wegmans.butter)!.price).toBeCloseTo(4.49, 2);
   });
 });
 
 describe('loadPricesForAllStores — error handling', () => {
-  it('sets error when getAllPrices throws', async () => {
-    (priceRegistry.getAllPrices as any).mockRejectedValue(
+  it('sets error when getAllCandidates throws', async () => {
+    (priceRegistry.getAllCandidates as any).mockRejectedValue(
       new Error('Network failure'),
     );
 

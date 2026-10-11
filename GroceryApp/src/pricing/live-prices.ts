@@ -26,7 +26,7 @@
 import type { PriceResult, SaleInfo, ConfidenceLevel } from './types';
 import { parseUnit } from './quantity';
 import { DEFAULT_TIME_ZONE, localDate } from './eligibility';
-import { extractKeywords, matchScore } from './intent';
+import { extractKeywords, HARD_ATTRIBUTES, matchScore } from './intent';
 import { relayGetJson, RelayRequestError } from './relay-client';
 
 // ─── Row shapes (the relay's allowlisted columns) ───────────────────────────
@@ -79,6 +79,8 @@ export interface Snapshot<T> {
   loadedAt: number;
   /** Set when the latest refresh failed — rows are last-known */
   refreshFailedAt?: number;
+  /** The relay hit its row cap: some offers in the region are missing. */
+  truncated?: boolean;
 }
 
 // ─── Snapshots & status ─────────────────────────────────────────────────────
@@ -94,6 +96,8 @@ export interface LivePriceStatus {
   failedAt?: number;
   /** Why, in words safe to show */
   detail?: string;
+  /** The last answer was cut at the relay's row cap (partial coverage). */
+  truncated?: boolean;
 }
 
 type Kind = 'deals' | 'shelf';
@@ -133,11 +137,14 @@ async function load<T>(kind: Kind, fsa: string, force: boolean): Promise<Snapsho
         fetchedAt: Number.isNaN(fetchedAt) ? now : fetchedAt,
         loadedAt: now,
         ...(payload.stale ? { refreshFailedAt: now } : {}),
+        ...(payload.truncated ? { truncated: true } : {}),
       };
       (snapshots as Record<Kind, Snapshot<unknown> | null>)[kind] = snap;
       status = payload.stale
         ? { state: 'failed', failedAt: now, detail: 'The price source is unavailable; showing last known prices.' }
-        : { state: 'ok' };
+        : snapshots.deals?.truncated || snapshots.shelf?.truncated
+          ? { state: 'ok', truncated: true, detail: 'Showing partial prices: some stores in your area were cut off.' }
+          : { state: 'ok' };
       return snap;
     } catch (err) {
       const notConfigured =
@@ -285,7 +292,7 @@ export function flyerOfferEnded(row: Pick<FlyerDealRow, 'valid_to'>, now: number
 }
 
 /** SQLite datetime('now') text is UTC without a zone marker. */
-function parseScrapedAt(value: string): number {
+export function parseScrapedAt(value: string): number {
   const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? `${value.replace(' ', 'T')}Z` : value;
   return Date.parse(iso);
 }
@@ -415,26 +422,121 @@ export function shelfPriceToPriceResult(
 /** Minimum share of the item's words a product name must contain. */
 const MATCH_THRESHOLD = 0.35;
 
+/** Most candidates an adapter returns per item and store. */
+export const MAX_CANDIDATES = 8;
+
 /**
- * The row whose name best matches `itemName` (whole-word tokens), cheapest
- * on a tie. Variant and "sale only" checks happen later, in eligibility.ts,
- * against the returned PriceResult's matchedName.
+ * Words that turn a product into a different kind of product: a derived
+ * form ("apple juice", "potato chips", "tomato sauce"), a different base
+ * ("coconut milk", "almond milk"), a confection ("Mini Eggs", "milk
+ * chocolate") or a non-food ("lemon dish soap"). A product carrying one the
+ * item doesn't ask for is not the item, however many words it shares.
  */
+const CATEGORY_CHANGERS = new Set(extractKeywords([
+  // derived forms
+  'juice', 'sauce', 'paste', 'puree', 'soup', 'broth', 'stock', 'powder', 'syrup',
+  'jam', 'jelly', 'spread', 'dip', 'dressing', 'ketchup', 'vinegar', 'cider',
+  'chip', 'crisp', 'cracker', 'cookie', 'cake', 'pie', 'muffin', 'pudding', 'bar',
+  'cereal', 'snack', 'noodle', 'drink', 'beverage', 'smoothie', 'yogurt', 'cream',
+  'nog', 'flavour', 'flavor', 'flavoured', 'flavored', 'scented', 'condensed', 'evaporated',
+  // different base
+  'coconut', 'almond', 'oat', 'soy', 'cashew', 'peanut',
+  // confectionery
+  'chocolate', 'choc', 'candy', 'gummy', 'gum', 'mini', 'cadbury',
+  // not food
+  'soap', 'detergent', 'shampoo', 'candle', 'cleaner', 'cat', 'dog', 'pet', 'treat',
+].join(' ')));
+
+/** The item's head noun: its last word that isn't a variant attribute. */
+function headNoun(query: string[]): string | undefined {
+  return [...query].reverse().find((t) => !HARD_ATTRIBUTES.has(t));
+}
+
+/**
+ * How well a product name stands for the item, or null when it doesn't:
+ *  - coverage: share of the item's words in the product (whole tokens)
+ *  - precision: share of the product's words the item asked for — brand and
+ *    descriptive extras rank a product lower, never reject it
+ * Rejected: below the coverage threshold, missing the item's head noun, or
+ * carrying a category-changing word the item doesn't.
+ */
+export function matchQuality(
+  query: string[],
+  productName: string,
+): { coverage: number; precision: number } | null {
+  const product = extractKeywords(productName);
+  const coverage = matchScore(query, product);
+  if (coverage < MATCH_THRESHOLD) return null;
+  const wanted = new Set(query);
+  const head = headNoun(query);
+  if (head && !product.includes(head)) return null;
+  if (product.some((t) => CATEGORY_CHANGERS.has(t) && !wanted.has(t))) return null;
+  const words = [...new Set(product.filter((t) => !/^\d+$/.test(t)))];
+  const precision = words.length === 0 ? 1 : words.filter((t) => wanted.has(t)).length / words.length;
+  return { coverage, precision };
+}
+
+/**
+ * The rows that best stand for `itemName`, best first (coverage, then
+ * precision, then newest, then cheapest), at most MAX_CANDIDATES, one per
+ * product name. Variant, sale-only and purchase checks happen later
+ * (eligibility.ts / basket.ts) against each PriceResult's matchedName —
+ * the basket picks among these, so a cheaper look-alike can't win here.
+ */
+export function findCandidateRows<T>(
+  itemName: string,
+  rows: T[],
+  nameOf: (row: T) => string,
+  priceOf: (row: T) => number | null,
+  timeOf: (row: T) => number = () => 0,
+): T[] {
+  const query = extractKeywords(itemName);
+  if (query.length === 0) return [];
+  const scored: { row: T; coverage: number; precision: number; time: number; price: number }[] = [];
+  for (const row of rows) {
+    const q = matchQuality(query, nameOf(row));
+    if (!q) continue;
+    const time = timeOf(row);
+    scored.push({ row, ...q, time: Number.isFinite(time) ? time : 0, price: priceOf(row) ?? Infinity });
+  }
+  scored.sort((a, b) =>
+    b.coverage - a.coverage || b.precision - a.precision || b.time - a.time || a.price - b.price);
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const s of scored) {
+    const key = nameOf(s.row).trim().toLowerCase();
+    if (seen.has(key)) continue; // same product: the newest listing already won
+    seen.add(key);
+    out.push(s.row);
+    if (out.length >= MAX_CANDIDATES) break;
+  }
+  return out;
+}
+
+/** The single best row for `itemName` (see findCandidateRows). */
 export function findBestRow<T>(
   itemName: string,
   rows: T[],
   nameOf: (row: T) => string,
   priceOf: (row: T) => number | null,
+  timeOf?: (row: T) => number,
 ): T | null {
-  const query = extractKeywords(itemName);
-  if (query.length === 0) return null;
-  let best: { row: T; score: number } | null = null;
+  return findCandidateRows(itemName, rows, nameOf, priceOf, timeOf)[0] ?? null;
+}
+
+/**
+ * Keep only the newest row per key (e.g. store + product): the shelf feed
+ * carries up to a week of scrapes, and an older cheaper price must never
+ * stand in for the current one.
+ */
+export function newestPerKey<T>(rows: T[], keyOf: (row: T) => string, timeOf: (row: T) => number): T[] {
+  const best = new Map<string, { row: T; time: number }>();
   for (const row of rows) {
-    const score = matchScore(query, extractKeywords(nameOf(row)));
-    if (score < MATCH_THRESHOLD) continue;
-    if (!best || score > best.score || (score === best.score && (priceOf(row) ?? Infinity) < (priceOf(best.row) ?? Infinity))) {
-      best = { row, score };
-    }
+    const key = keyOf(row);
+    const time = timeOf(row);
+    const t = Number.isFinite(time) ? time : -Infinity;
+    const cur = best.get(key);
+    if (!cur || t > cur.time) best.set(key, { row, time: t });
   }
-  return best?.row ?? null;
+  return [...best.values()].map((v) => v.row);
 }
