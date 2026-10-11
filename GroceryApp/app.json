@@ -33,6 +33,7 @@
       ],
       "infoPlist": {
         "NSCameraUsageDescription": "Scan barcodes to add items to your grocery list, scan QR codes to join your family, and photograph store flyers for price extraction",
+        "NSMicrophoneUsageDescription": "PantryRun never records audio. iOS asks for this because the camera component used for barcode, QR and flyer scanning can also record video with sound; PantryRun does not use that.",
         "NSPhotoLibraryUsageDescription": "Select a store flyer photo from your library so PantryRun can read its prices",
         "NSLocalNetworkUsageDescription": "PantryRun connects to your self-hosted sync relay on your local network to keep your family's grocery lists in sync",
         "NSAppTransportSecurity": {
