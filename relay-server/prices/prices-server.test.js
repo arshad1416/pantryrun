@@ -447,6 +447,26 @@ try {
     const capped = db.prepare(sqlFor('deals', 6)).all('L0R%');
     expect(capped.filter((r) => r.merchant === 'Zehrs')).toHaveLength(3);
   });
+
+  test('coverage lists FSAs with current rows only, and the data queries use the index', () => {
+    const { COVERAGE_SQL } = require('./region');
+    // Mirrors the live Turso indexes (hermes-scripts setup_store_prices.py).
+    db.exec('CREATE INDEX deals_pc ON flipp_deals(postal_code COLLATE NOCASE, valid_to)');
+    db.exec('CREATE INDEX shelf_pc ON store_prices(postal_code COLLATE NOCASE, scraped_at)');
+    addDeal('Zehrs', 'Grapes', 2.99, 'L0R2H4');
+    addDeal('Zehrs', 'Grapes', 2.99, 'M5V3L9');
+    db.prepare(`INSERT INTO flipp_deals (merchant, postal_code, name, price, price_real, valid_from, valid_to)
+                VALUES ('Old', 'K1P1J1', 'Stale', '1', 1, '2020-01-01', '2020-01-07T23:59:59-05:00')`).run();
+    addShelf('nofrills', 'Milk 4 L', 5.99, 1, 'H2X1Y4');
+    addShelf('nofrills', 'Milk 4 L', 5.99, 30, 'V6B1A1');
+    const fsas = (sql) => db.prepare(sql).all().map((r) => r.coverage_fsa).sort();
+    expect(fsas(COVERAGE_SQL.deals)).toEqual(['L0R', 'M5V']);
+    expect(fsas(COVERAGE_SQL.shelf)).toEqual(['H2X']);
+    for (const kind of ['deals', 'shelf']) {
+      const plan = db.prepare(`EXPLAIN QUERY PLAN ${sqlFor(kind, 10)}`).all('L0R%').map((r) => r.detail).join('\n');
+      expect(plan).toMatch(/USING (COVERING )?INDEX/);
+    }
+  });
 });
 
 describe('truncation flag', () => {

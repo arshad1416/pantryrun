@@ -41,12 +41,18 @@ const SHELF_COLUMNS = [
  *    row cap trims every store evenly instead of dropping whichever stores
  *    sort last alphabetically.
  * `limit` is one more than the cap so a cut answer can say `truncated`.
+ *
+ * `postal_code LIKE 'M5V%'` only uses an index declared on
+ * `postal_code COLLATE NOCASE` (the one on flipp_deals is); against a plain
+ * index it scans the table.
  */
 function sqlFor(kind, limit) {
   if (kind === 'deals') {
-    // valid_to is compared on its date part: Flipp writes ISO strings with an
-    // offset, which don't order against SQLite's datetime(). The app judges the
-    // exact window; this only drops offers that ended before yesterday.
+    // valid_to is compared as a string against a bare date: Flipp writes ISO
+    // strings with an offset, which don't order against SQLite's datetime(), but
+    // "2026-10-10T…" >= "2026-10-10" holds exactly when its date part does, and
+    // the bare comparison can use the (postal_code, valid_to) index. The app
+    // judges the exact window; this only drops offers that ended before yesterday.
     return `SELECT * FROM (
               SELECT *, ROW_NUMBER() OVER (
                        PARTITION BY merchant ORDER BY price_real IS NULL, price_real, name
@@ -57,7 +63,7 @@ function sqlFor(kind, limit) {
                        ) AS listing_rank
                 FROM flipp_deals
                 WHERE postal_code LIKE ?
-                  AND substr(valid_to, 1, 10) >= date('now', '-1 day')
+                  AND valid_to >= date('now', '-1 day')
               )
               WHERE listing_rank = 1
             )
