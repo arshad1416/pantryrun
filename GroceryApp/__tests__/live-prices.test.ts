@@ -59,7 +59,7 @@ const realFetch = global.fetch;
 
 beforeEach(() => {
   _resetLivePrices();
-  mockSettings = { relayUrl: 'wss://relay.example.com', relayPort: 8080, flippFsa: 'L0R 2H4' };
+  mockSettings = { relayUrl: 'wss://relay.example.com', relayPort: 8080, flippFsa: 'L0R 2H4', pricingOptedIn: true };
   relayStatus = 200;
   requests = [];
   dealRows = [];
@@ -146,6 +146,19 @@ describe('1. relay requests', () => {
     expect(storePricesAdapter.isAvailable()).toBe(false);
     expect(await discoverStores()).toEqual(expect.not.arrayContaining([expect.objectContaining({ storeId: 'fortinos' })]));
     expect(requests).toHaveLength(0);
+  });
+
+  it.each([false, undefined])('not opted into prices (%s) → no store discovery, nothing fetched', async (optedIn) => {
+    dealRows = [{ merchant: 'Fortinos', name: 'Milk 4 L', price: '5.99', price_real: 5.99, valid_from: null, valid_to: inDays(3) } as unknown as FlyerDealRow];
+    mockSettings.pricingOptedIn = optedIn;
+    expect(await discoverStores()).toEqual([]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it('the list screen only discovers stores after the price opt-in', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, '../src/screens/GroceryListScreen.tsx'), 'utf8');
+    const effect = src.slice(src.lastIndexOf('useEffect', src.indexOf('discoverStores()')), src.indexOf('discoverStores()'));
+    expect(effect).toMatch(/if \(!isFocused \|\| !\(getSettings\(\)\.pricingOptedIn \?\? false\)\) return;/);
   });
 });
 
