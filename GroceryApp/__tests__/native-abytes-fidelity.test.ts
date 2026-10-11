@@ -117,6 +117,14 @@ function makeConfig() {
 /** Persistence is fire-and-forget; let the promise chain settle. */
 const settle = () => new Promise((r) => setTimeout(r, 50));
 
+/** Wait for the queued write itself; a fixed delay flakes under parallel load. */
+async function settleQueue(count: number): Promise<void> {
+  for (let i = 0; i < 100; i++) {
+    if ((await loadQueueEntries()).length >= count) return;
+    await settle();
+  }
+}
+
 describe('C5 — a queued offline edit survives a restart on a device without ABYTES', () => {
   it('writes a non-empty ciphertext and a 16-byte tag to disk', async () => {
     (globalThis as any).WebSocket = NoopWebSocket;
@@ -125,7 +133,7 @@ describe('C5 — a queued offline edit survives a restart on a device without AB
 
     const plaintext = new TextEncoder().encode('milk-oats-and-a-long-enough-body');
     client.sendUpdate('list-c5', plaintext);
-    await settle();
+    await settleQueue(1);
 
     const persisted = await loadQueueEntries();
     expect(persisted).toHaveLength(1);
@@ -146,7 +154,7 @@ describe('C5 — a queued offline edit survives a restart on a device without AB
     const clientA = new YjsWebSocketClient(makeConfig());
     await clientA.init();
     clientA.sendUpdate('list-c5-kill', new TextEncoder().encode('survives-the-kill'));
-    await settle();
+    await settleQueue(1);
     clientA.disconnect(); // ~app kill: the in-memory queue dies with the instance
 
     // Fresh process, same key. This is the assertion the bug breaks: the row
