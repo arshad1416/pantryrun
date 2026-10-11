@@ -42,19 +42,10 @@ const SHELF_COLUMNS = [
  *    sort last alphabetically.
  * `limit` is one more than the cap so a cut answer can say `truncated`.
  *
- * The FSA is matched as a range (see fsaRange), not `LIKE 'M5V%'`: SQLite
- * only uses an index for LIKE when the index is COLLATE NOCASE, so LIKE made
- * every request scan the whole table.
+ * `postal_code LIKE 'M5V%'` only uses an index declared on
+ * `postal_code COLLATE NOCASE` (the one on flipp_deals is); against a plain
+ * index it scans the table.
  */
-/**
- * [lo, hi) bounds covering every postal code that starts with `fsa`:
- * 'M5V' → ['M5V', 'M5W']. Callers pass a validated A9A FSA, so bumping the
- * last letter never wraps past 'Z' into something unexpected ('Z' → '[').
- */
-function fsaRange(fsa) {
-  return [fsa, fsa.slice(0, -1) + String.fromCharCode(fsa.charCodeAt(fsa.length - 1) + 1)];
-}
-
 function sqlFor(kind, limit) {
   if (kind === 'deals') {
     // valid_to is compared as a string against a bare date: Flipp writes ISO
@@ -71,7 +62,7 @@ function sqlFor(kind, limit) {
                          PARTITION BY merchant, name, price, valid_from, valid_to ORDER BY postal_code
                        ) AS listing_rank
                 FROM flipp_deals
-                WHERE postal_code >= ? AND postal_code < ?
+                WHERE postal_code LIKE ?
                   AND valid_to >= date('now', '-1 day')
               )
               WHERE listing_rank = 1
@@ -88,7 +79,7 @@ function sqlFor(kind, limit) {
                        PARTITION BY store_id, lower(coalesce(name_clean, name)) ORDER BY scraped_at DESC
                      ) AS product_rank
               FROM store_prices
-              WHERE postal_code >= ? AND postal_code < ?
+              WHERE postal_code LIKE ?
                 AND scraped_at > datetime('now', '-7 days')
             )
             WHERE product_rank = 1
@@ -205,7 +196,7 @@ async function handlePricesRequest(req, res, enrolledDevices, now = Date.now()) 
   const { sql, columns } = QUERIES[kind];
   let rows;
   try {
-    rows = await turso.query(sql, fsaRange(sourceFsa));
+    rows = await turso.query(sql, [`${sourceFsa}%`]);
   } catch (err) {
     // TursoError messages are safe (no URL, no token).
     console.warn(`[prices] ${kind} query failed for ${fsa}: ${err.message}`);
@@ -246,7 +237,6 @@ function _resetPricesState() {
 }
 
 module.exports = {
-  fsaRange,
   handlePricesRequest,
   cleanPricesState,
   _resetPricesState,

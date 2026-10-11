@@ -22,17 +22,20 @@ const COVERAGE_TTL_MS = 60 * 60 * 1000;
 // scans the whole table (millions of rows in flipp_deals, billed per row by
 // Turso). This walks the (postal_code, …) index instead: one seek per distinct
 // postal code, plus one EXISTS probe for freshness, so the cost scales with
-// the number of regions, not rows.
+// the number of regions, not rows. Every comparison is COLLATE NOCASE to match
+// that index; a plain comparison would ignore it and scan.
 function coverageSql(table, freshness) {
   return `WITH RECURSIVE codes(pc) AS (
-            SELECT min(postal_code) FROM ${table}
+            SELECT min(postal_code COLLATE NOCASE) FROM ${table}
             UNION ALL
-            SELECT (SELECT min(postal_code) FROM ${table} WHERE postal_code > pc)
+            SELECT (SELECT min(postal_code COLLATE NOCASE) FROM ${table}
+                     WHERE postal_code COLLATE NOCASE > pc)
               FROM codes WHERE pc IS NOT NULL
           )
           SELECT DISTINCT upper(substr(pc, 1, 3)) AS coverage_fsa FROM codes
           WHERE pc IS NOT NULL
-            AND EXISTS (SELECT 1 FROM ${table} WHERE postal_code = pc AND ${freshness})`;
+            AND EXISTS (SELECT 1 FROM ${table}
+                         WHERE postal_code COLLATE NOCASE = pc AND ${freshness})`;
 }
 
 const COVERAGE_SQL = {
