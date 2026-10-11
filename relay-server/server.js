@@ -524,15 +524,33 @@ function deserializeState(saved) {
 let _saveTimeout = null;
 
 /**
+ * Write the state file atomically: temp file, fsync, rename. A crash or full
+ * disk mid-write used to leave a truncated relay-state.json, which the next
+ * boot failed to parse and replaced with empty state — logging every device
+ * out of every family at once.
+ */
+function writeStateFile() {
+  const tmp = `${STATE_FILE}.tmp-${process.pid}`;
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeSync(fd, JSON.stringify(serializeState(), null, 2));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, STATE_FILE);
+}
+
+/**
  * Debounced save of relay state to disk.
  * Writes at most once per 500ms to avoid hammering the filesystem.
  */
 function persistState() {
   if (_saveTimeout) clearTimeout(_saveTimeout);
   _saveTimeout = setTimeout(() => {
+    _saveTimeout = null;
     try {
-      const data = serializeState();
-      fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2), 'utf-8');
+      writeStateFile();
     } catch (err) {
       console.warn(`[persist] Failed to save state: ${err.message}`);
     }
@@ -551,7 +569,15 @@ function loadStateFromDisk() {
       console.log(`[persist] Loaded state: ${enrolledDevices.size} enrollments, ${usedInviteSignatures.size} used invites`);
     }
   } catch (err) {
-    console.warn(`[persist] Failed to load state: ${err.message}. Starting fresh.`);
+    // Starting fresh means the next persistState() overwrites this file, so
+    // keep the unreadable original for the operator first.
+    let keptAt = `${STATE_FILE}.corrupt-${Date.now()}`;
+    try {
+      fs.copyFileSync(STATE_FILE, keptAt);
+    } catch (copyErr) {
+      keptAt = `(could not copy aside: ${copyErr.message})`;
+    }
+    console.error(`[persist] Failed to load state: ${err.message}. Original kept at ${keptAt}. Starting fresh.`);
   }
 }
 
@@ -2224,7 +2250,7 @@ function gracefulShutdown() {
     clearTimeout(_saveTimeout);
     _saveTimeout = null;
     try {
-      fs.writeFileSync(STATE_FILE, JSON.stringify(serializeState(), null, 2), 'utf-8');
+      writeStateFile();
     } catch (err) {
       console.warn(`[shutdown] Failed to save state: ${err.message}`);
     }
