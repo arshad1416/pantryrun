@@ -171,10 +171,10 @@ describe('2. flyer deal → PriceResult', () => {
     expect(soup.multiBuy).toEqual({ groupSize: 2, groupPrice: 5, requiresFullGroup: false });
   });
 
-  it('package sizes come from the name; multipacks are not guessed', () => {
+  it('package sizes come from the name, multipacks included', () => {
     expect(packageFromName('Lactantia Lactose Free Milk 2 L')).toEqual({ packageSize: 2, unit: 'L' });
     expect(packageFromName('Old Cheddar 400 g')).toEqual({ packageSize: 400, unit: 'g' });
-    expect(packageFromName('Coca-Cola 12 x 355 mL')).toBeNull();
+    expect(packageFromName('Coca-Cola 12 x 355 mL')).toEqual({ packageSize: 4260, unit: 'ml' });
     expect(packageFromName('Jamaican Beef Patties')).toBeNull();
   });
 

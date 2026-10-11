@@ -182,9 +182,11 @@ function packagePurchase(pr: PriceResult, packages: number, content: number | nu
       const groups = Math.floor(n / groupSize);
       const rest = n - groups * groupSize;
       costCents = groups * groupCents + rest * unitCents;
-      breakdown = rest > 0
-        ? `${groups} × ${groupSize} for ${formatCents(groupCents)} + ${rest} × ${formatCents(unitCents)}`
-        : `${groups} × ${groupSize} for ${formatCents(groupCents)}`;
+      // Only the groups actually bought: never "0 × 3 for $1.00 + …".
+      breakdown = [
+        ...(groups > 0 ? [`${groups} × ${groupSize} for ${formatCents(groupCents)}`] : []),
+        ...(rest > 0 || groups === 0 ? [`${rest} × ${formatCents(unitCents)}`] : []),
+      ].join(' + ');
     }
   } else {
     costCents = n * unitCents;

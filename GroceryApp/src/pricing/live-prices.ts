@@ -18,9 +18,9 @@
  *  - Shelf prices are scraped (tier 'scraping'), so eligibility.ts treats
  *    them as usable but never "verified". Branch, channel and stock are not
  *    claimed.
- *  - Package size is read from the product name ("Milk 4 L"); a multipack
- *    ("12 x 355 mL") or no size leaves the offer per-package-of-one rather
- *    than guessing contents.
+ *  - Package size is read from the product name ("Milk 4 L", "6 x 355 mL",
+ *    "12 Pack"); with no size the offer is one package of unknown content
+ *    (unit 'pkg'), never a per-each price.
  */
 
 import type { PriceResult, SaleInfo, ConfidenceLevel } from './types';
@@ -201,21 +201,64 @@ export function shelfStoreId(row: Pick<ShelfPriceRow, 'store_id' | 'store_name'>
 
 // ─── Package size from a product name ───────────────────────────────────────
 
+const MEASURE_UNIT = '(kg|g|ml|l|lb|lbs|oz)';
+/** "6 x 355 mL", "4x100g", "12 × 1 L" — a multipack of sized units */
+const MULTIPACK_RE = new RegExp(`(\\d+)\\s*[x×]\\s*(\\d+(?:[.,]\\d+)?)\\s*${MEASURE_UNIT}\\b`, 'i');
+const SIZE_RE = new RegExp(`(\\d+(?:[.,]\\d+)?)\\s*${MEASURE_UNIT}\\b`, 'gi');
+/** "12 pack", "12-pk", "12 ct", "6 count", "10 pcs", "pack of 12" */
+const COUNT_RE = /(\d+)\s*-?\s*(?:pack|pk|pkg|ct|count|pcs?|pieces?)\b|\bpack\s+of\s+(\d+)\b/i;
+/** "dozen", "2 dozen", "half dozen", "1/2 dozen" */
+const DOZEN_RE = /(?:\b(half|1\/2)\s+(?:a\s+)?|(\d+)\s*)?\bdozen\b/i;
+
+function measureUnit(raw: string): string {
+  const u = raw.toLowerCase();
+  return u === 'l' ? 'L' : u;
+}
+
+function countFromName(name: string): number | null {
+  const c = name.match(COUNT_RE);
+  if (c) return parseInt(c[1] ?? c[2], 10) || null;
+  const d = name.match(DOZEN_RE);
+  if (d) return d[1] ? 6 : d[2] ? parseInt(d[2], 10) * 12 || null : 12;
+  return null;
+}
+
 /**
- * "Neilson 2% Milk 4 L" → { packageSize: 4, unit: 'L' }. A multipack
- * ("12 x 355 mL", "6 × 1 L") or no size → null: the offer is one package
- * of unknown content, which quantity.ts only costs for package-count items.
+ * Package contents from a product name:
+ *  - "Neilson 2% Milk 4 L"           → 4 L
+ *  - "Coca-Cola 6 x 355 mL"          → 2130 mL (multipack: count × size)
+ *  - "Burnbrae Large Eggs 12 Pack"   → 12 each; "Eggs Dozen" → 12 each
+ *  - "Pepsi 12 pk 355 mL"            → 4260 mL
+ * No recognisable size → null: one package of unknown content, which
+ * quantity.ts costs only for package-count items ("1 milk"), never per each.
  */
 export function packageFromName(name: string): { packageSize: number; unit: string } | null {
+  const multi = name.match(MULTIPACK_RE);
+  if (multi) {
+    const count = parseInt(multi[1], 10);
+    const size = parseFloat(multi[2].replace(',', '.'));
+    const unit = measureUnit(multi[3]);
+    if (count > 0 && size > 0 && parseUnit(unit)) return { packageSize: +(count * size).toFixed(3), unit };
+    return null;
+  }
+  // "2 x 3" with no unit: contents unknown.
   if (/\d\s*[x×]\s*\d/i.test(name)) return null;
-  const matches = [...name.matchAll(/(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l|lb|lbs|oz)\b/gi)];
-  const last = matches[matches.length - 1];
-  if (!last) return null;
-  const size = parseFloat(last[1].replace(',', '.'));
-  const unit = last[2].toLowerCase() === 'l' ? 'L' : last[2].toLowerCase();
-  if (!(size > 0) || !parseUnit(unit)) return null;
-  return { packageSize: size, unit };
+
+  const count = countFromName(name);
+  const sizes = [...name.matchAll(SIZE_RE)];
+  const last = sizes[sizes.length - 1];
+  if (last) {
+    const size = parseFloat(last[1].replace(',', '.'));
+    const unit = measureUnit(last[2]);
+    if (!(size > 0) || !parseUnit(unit)) return null;
+    return { packageSize: count && count > 1 ? +(count * size).toFixed(3) : size, unit };
+  }
+  if (count && count > 0) return { packageSize: count, unit: 'each' };
+  return null;
 }
+
+/** Unit of an offer whose contents are unknown: one package, never "each". */
+export const UNKNOWN_PACKAGE_UNIT = 'pkg';
 
 // ─── Dates ──────────────────────────────────────────────────────────────────
 
@@ -287,7 +330,7 @@ export function flyerDealToPriceResult(row: FlyerDealRow, snap: Snapshot<FlyerDe
   return {
     price,
     unitPrice: price,
-    unit: measure ?? pkg?.unit ?? 'each',
+    unit: measure ?? pkg?.unit ?? UNKNOWN_PACKAGE_UNIT,
     saleInfo: null,
     source: {
       adapterId: 'flipp-deals',
@@ -300,8 +343,8 @@ export function flyerDealToPriceResult(row: FlyerDealRow, snap: Snapshot<FlyerDe
     ...(row.image_url ? { imageUrl: row.image_url } : {}),
     matchedName: row.name,
     offerType: 'sale',
-    ...(measure ? { pricingBasis: 'measure' as const } : {}),
-    ...(pkg ? { packageSize: pkg.packageSize, pricingBasis: 'package' as const } : {}),
+    pricingBasis: measure ? 'measure' : 'package',
+    ...(pkg ? { packageSize: pkg.packageSize } : {}),
     ...(multiBuy ? { multiBuy: { ...multiBuy, requiresFullGroup: false } } : {}),
     ...(from.date ? { validFromDate: from.date } : {}),
     ...(from.instant !== undefined ? { validFrom: from.instant } : {}),
@@ -348,7 +391,7 @@ export function shelfPriceToPriceResult(
   return {
     price: weighed ? (row.unit_price_real as number) : price,
     unitPrice: row.unit_price_real ?? price,
-    unit: weighed ? scrapedUnit : pkg?.unit ?? 'each',
+    unit: weighed ? scrapedUnit : pkg?.unit ?? UNKNOWN_PACKAGE_UNIT,
     saleInfo,
     source: {
       adapterId: 'store-prices',
@@ -361,8 +404,8 @@ export function shelfPriceToPriceResult(
     ...(row.image_url ? { imageUrl: row.image_url } : {}),
     matchedName: row.name,
     offerType: onSale ? 'sale' : 'regular',
-    ...(weighed ? { pricingBasis: 'measure' as const } : {}),
-    ...(pkg ? { packageSize: pkg.packageSize, pricingBasis: 'package' as const } : {}),
+    pricingBasis: weighed ? 'measure' : 'package',
+    ...(pkg ? { packageSize: pkg.packageSize } : {}),
     ...(snap.refreshFailedAt ? { refreshFailedAt: snap.refreshFailedAt } : {}),
   };
 }
