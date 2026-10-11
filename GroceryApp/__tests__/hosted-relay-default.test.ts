@@ -107,6 +107,17 @@ describe('legacy default migration', () => {
     expect(loaded.relayPort).toBe(9090);
   });
 
+  it('relabels a stale managed tier that points at a custom URL as self-hosted', async () => {
+    const { loaded } = await relaunchWith({
+      hostingTier: 'managed',
+      relayUrl: 'wss://my.example.com',
+      relayPort: 443,
+      hostedRelayDefaultMigrated: undefined,
+    });
+    expect(loaded.hostingTier).toBe('self_hosted');
+    expect(loaded.relayUrl).toBe('wss://my.example.com');
+  });
+
   it('runs once: a later deliberate ws://localhost is kept', async () => {
     const { loaded } = await relaunchWith({
       hostingTier: 'self_hosted',

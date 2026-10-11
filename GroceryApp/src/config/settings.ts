@@ -234,6 +234,11 @@ function migrateLegacyRelayDefaultOnce(settings: Record<string, unknown>): boole
     settings.relayUrl = HOSTED_RELAY_URL;
     settings.relayPort = HOSTED_RELAY_PORT;
     settings.hostingTier = 'managed';
+  } else if (settings.hostingTier === 'managed' && settings.relayUrl !== HOSTED_RELAY_URL) {
+    // A 'managed' tier left over from builds where that tier meant something
+    // else, pointing at the user's own URL: that is a self-hosted setup, so
+    // label it as one (the URL itself is kept).
+    settings.hostingTier = 'self_hosted';
   }
   return true;
 }

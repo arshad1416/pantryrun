@@ -455,7 +455,7 @@ export default function SettingsScreen({ navigation }: Props) {
             wss:// host + 443. */}
         <SettingsRow
           label="WebSocket URL"
-          value={isSelfHosted ? settings.relayUrl : HOSTED_RELAY_URL}
+          value={settings.relayUrl || (isSelfHosted ? '' : HOSTED_RELAY_URL)}
           onChangeText={isSelfHosted ? (v) => handleUpdate({ relayUrl: v }) : undefined}
           placeholder="ws://relay.home.arpa"
           keyboardType="url"
