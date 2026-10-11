@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 
-jest.mock('react-native', () => ({ Platform: { OS: 'ios' } }), { virtual: true });
+jest.mock('react-native', () => ({ Platform: { OS: 'ios' } }));
 
 import {
   useEntitlementStore,

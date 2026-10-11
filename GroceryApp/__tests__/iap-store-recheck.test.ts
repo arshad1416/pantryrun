@@ -25,7 +25,7 @@ const mockRN = {
     },
   },
 };
-jest.mock('react-native', () => mockRN, { virtual: true });
+jest.mock('react-native', () => mockRN);
 jest.mock('../src/sync/sync-manager', () => ({
   syncManager: { registerList: jest.fn() },
 }));

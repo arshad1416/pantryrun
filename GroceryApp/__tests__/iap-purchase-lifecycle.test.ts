@@ -16,7 +16,7 @@
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 
-jest.mock('react-native', () => ({ Platform: { OS: 'android' } }), { virtual: true });
+jest.mock('react-native', () => ({ Platform: { OS: 'android' } }));
 jest.mock('../src/sync/sync-manager', () => ({
   syncManager: { registerList: jest.fn() },
 }));
