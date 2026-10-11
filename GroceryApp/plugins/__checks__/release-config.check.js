@@ -475,6 +475,33 @@ check('S4: the custom invite scheme old builds generate is still registered', ()
   assert.ok(/android:scheme="groceryapp"/.test(read('android/app/src/main/AndroidManifest.xml')), 'Android lost the groceryapp scheme');
 });
 
+check('S6: Android backup and device transfer are off, and prebuild reproduces it', () => {
+  // Restored SecureStore values / DB rows are undecryptable on a new device
+  // (the Keystore key does not move), so the app opts out entirely.
+  const manifest = read('android/app/src/main/AndroidManifest.xml');
+  assert.ok(/android:allowBackup="false"/.test(manifest), 'manifest allows Auto Backup');
+  assert.ok(
+    /android:dataExtractionRules="@xml\/data_extraction_rules"/.test(manifest),
+    'Android 12+ still does device-to-device transfer without dataExtractionRules'
+  );
+  const plugin = require(path.join(root, 'plugins/withAndroidBackupRules.js'));
+  assert.strictEqual(read(path.join('android', plugin.RES_PATH)), plugin.DATA_EXTRACTION_RULES_XML,
+    'committed data_extraction_rules.xml drifted from the plugin that regenerates it');
+  for (const section of ['cloud-backup', 'device-transfer']) {
+    const block = plugin.DATA_EXTRACTION_RULES_XML.split(`<${section}>`)[1].split(`</${section}>`)[0];
+    for (const d of ['database', 'sharedpref']) {
+      assert.ok(block.includes(`<exclude domain="${d}" path="." />`), `${section} does not exclude ${d}`);
+    }
+    assert.ok(!block.includes('<include'), `${section} re-includes something`);
+  }
+  const plugins = readJson('app.json').expo.plugins.map((p) => (Array.isArray(p) ? p[0] : p));
+  assert.ok(plugins.includes('./plugins/withAndroidBackupRules.js'), 'backup-rules plugin not registered');
+  assert.strictEqual(readJson('app.json').expo.android.allowBackup, false);
+  const app = { $: { 'android:name': '.MainApplication', 'android:allowBackup': 'true' } };
+  plugin.setBackupRules({ manifest: { application: [app] } });
+  assert.strictEqual(app.$['android:allowBackup'], 'false');
+});
+
 pending('S5: hosted association files carry real IDs, not placeholders', () => {
   // site/.well-known/* are the ready-to-host copies for the pantryrun-site Worker.
   // Universal / app links cannot verify until the owner fills these in.

@@ -19,6 +19,7 @@
       ],
       "./plugins/withLibcxxPickFirst.js",
       "./plugins/withNetworkSecurityConfig.js",
+      "./plugins/withAndroidBackupRules.js",
       [
         "expo-notifications",
         {
@@ -85,6 +86,7 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
+      "allowBackup": false,
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "POST_NOTIFICATIONS"
