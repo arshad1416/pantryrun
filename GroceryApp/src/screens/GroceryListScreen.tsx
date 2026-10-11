@@ -527,7 +527,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     }
     Alert.alert(
       'Turn on price lookups to scan flyers?',
-      'Flyer scanning reads prices from your photo into your local price list. The photo (with location metadata removed) is sent to your sync relay (PantryRun's, or your own if you self-host) for extraction and then discarded — your item names and shopping habits never leave this device. You can turn this off anytime in Settings.',
+      'Flyer scanning reads prices from your photo into your local price list. The photo (with location metadata removed) is sent to your sync relay (PantryRun’s, or your own if you self-host) for extraction and then discarded — your item names and shopping habits never leave this device. You can turn this off anytime in Settings.',
       [
         { text: 'Not now', style: 'cancel' },
         {
