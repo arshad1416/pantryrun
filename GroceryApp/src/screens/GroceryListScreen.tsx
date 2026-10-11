@@ -55,13 +55,8 @@ import CategoryHeader from '../components/CategoryHeader';
 import GotItHeader from '../components/GotItHeader';
 import type { StoreTotal } from '../components/StoreTotalBar';
 import { themeColors } from '../components/groceryTheme';
-import {
-  useEntitlementStore,
-  purchasePlus,
-  restorePlus,
-  PLUS_PAYWALL_COPY,
-  PLUS_PRICE_DISPLAY,
-} from '../config/entitlements';
+import { useEntitlementStore } from '../config/entitlements';
+import PlusPaywall, { usePlusPriceLabel } from '../components/PlusPaywall';
 
 // New Antigravity components
 import SearchBar from '../components/SearchBar';
@@ -118,33 +113,11 @@ export default function GroceryListScreen({ route, navigation }: Props) {
   // PantryRun Plus — entitlement state is computed ONLY in
   // src/config/entitlements.ts; this screen just reads and routes to it.
   const isPlus = useEntitlementStore((s) => s.isPlus);
-  const handlePlusUpsell = useCallback(() => {
-    Alert.alert('PantryRun Plus', PLUS_PAYWALL_COPY, [
-      {
-        text: `Subscribe • ${PLUS_PRICE_DISPLAY}`,
-        onPress: () => {
-          purchasePlus().then((ok) => {
-            if (!ok) {
-              const err = useEntitlementStore.getState().lastError;
-              if (err) Alert.alert('Purchase failed', err);
-            }
-          });
-        },
-      },
-      {
-        text: 'Restore Purchase',
-        onPress: () => {
-          restorePlus().then((ok) => {
-            if (!ok) {
-              const err = useEntitlementStore.getState().lastError;
-              if (err) Alert.alert('Restore failed', err);
-            }
-          });
-        },
-      },
-      { text: 'Not Now', style: 'cancel' },
-    ]);
-  }, []);
+  // Plus is sold on the PlusPaywall modal (Guideline 3.1.2 disclosures),
+  // never from a system Alert.
+  const [showPlusPaywall, setShowPlusPaywall] = useState(false);
+  const plusPriceLabel = usePlusPriceLabel();
+  const handlePlusUpsell = useCallback(() => setShowPlusPaywall(true), []);
 
   // Price store
   const priceLoading = usePriceStore((s) => s.isLoading);
@@ -1102,7 +1075,7 @@ export default function GroceryListScreen({ route, navigation }: Props) {
             >
               <Ionicons name="lock-closed" size={14} color={isDark ? '#FFC107' : '#B28704'} />
               <Text style={[styles.findPricesText, { color: isDark ? '#FFC107' : '#B28704' }]}>
-                Trip Optimizer — unlock with PantryRun Plus ({PLUS_PRICE_DISPLAY})
+                Trip Optimizer — unlock with PantryRun Plus ({plusPriceLabel})
               </Text>
             </TouchableOpacity>
           )}
@@ -1348,6 +1321,9 @@ export default function GroceryListScreen({ route, navigation }: Props) {
           handleRefreshPrices();
         }}
       />
+
+      {/* PantryRun Plus paywall */}
+      <PlusPaywall visible={showPlusPaywall} onClose={() => setShowPlusPaywall(false)} />
     </View>
   );
 }
