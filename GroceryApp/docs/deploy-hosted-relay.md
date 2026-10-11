@@ -56,15 +56,19 @@ on the Pi, never committed, never baked into the image:
 
 ```sh
 cd ~/pantryrun
-docker run --rm --user 1000:1000 -v "$PWD/relay-server:/app" -w /app \
-  node:20-alpine node tokens/blind-rsa-keygen.js
+docker compose build relay   # the keygen needs the relay's npm dependencies
+mkdir -p relay-server/keys
+docker run --rm --user 1000:1000 -v "$PWD/relay-server/keys:/app/keys" \
+  groceryapp-relay:latest node tokens/blind-rsa-keygen.js
 chmod 600 relay-server/keys/issuer-private-key.pem
 ls -l relay-server/keys/      # issuer-private-key.pem, issuer-public-key.pem
 ```
 
-(`--user 1000:1000` makes the files owned by the uid the container's `node`
-user runs as, so the read-only mount is readable. If Node is installed on the
-Pi, `cd relay-server && node tokens/blind-rsa-keygen.js` is equivalent.)
+(The keygen runs inside the built relay image because a bare `node` image
+lacks `@cloudflare/blindrsa-ts`. `--user 1000:1000` makes the files owned by the
+uid the container's `node` user runs as, so the read-only mount is readable. If
+Node is installed on the Pi, `cd relay-server && npm install && node
+tokens/blind-rsa-keygen.js` is equivalent.)
 Rotating this pair invalidates outstanding blind tokens — see
 `relay-server/KEY-ROTATION.md`. Back it up with the data volume (§9).
 
@@ -177,6 +181,11 @@ docker compose logs -f cloudflared      # "Registered tunnel connection" x4
 stays the self-host stack.
 
 ## 7. Verify
+
+If port 8080 is already taken on the host, publish the relay on other host
+ports in an untracked `docker-compose.override.yml` (for example
+`127.0.0.1:18080:8080`) and use that port below. The tunnel reaches
+`relay:8080` over the compose network, so it is unaffected.
 
 ```sh
 # On the Pi, straight to the relay:
