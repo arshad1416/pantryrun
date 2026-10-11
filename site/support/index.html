@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Support — PantryRun</title>
+<meta name="description" content="Help with PantryRun: family sync, invites, the recovery phrase, prices, PantryRun Plus, and deleting your data." />
+<meta name="color-scheme" content="light dark" />
+<link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <a class="mark" href="/">Pantry<span>Run</span></a>
+    <nav>
+      <a href="/privacy">Privacy</a>
+      <a href="/terms">Terms</a>
+      <a href="/support">Support</a>
+    </nav>
+  </header>
+
+  <h1>Support</h1>
+  <p class="lede">
+    Answers to the questions people actually ask. Still stuck? Email
+    <a href="mailto:support@pantryrun.app">support@pantryrun.app</a> and a human will
+    read it.
+  </p>
+
+  <div class="callout">
+    <p>
+      <strong>Before you write in:</strong> PantryRun has no accounts, so we can't look
+      you up or read your lists. Tell us your phone model, the PantryRun version
+      (shown on its App Store / Google Play page or in your phone's app settings),
+      and what you tapped. Never send us your
+      12-word recovery phrase; nobody from PantryRun will ever ask for it.
+    </p>
+  </div>
+
+  <div class="toc">
+    <strong>Contents</strong>
+    <ol>
+      <li><a href="#sync">Sync and the relay</a></li>
+      <li><a href="#invites">Inviting your family</a></li>
+      <li><a href="#recovery">The recovery phrase</a></li>
+      <li><a href="#prices">Prices and flyer scanning</a></li>
+      <li><a href="#plus">PantryRun Plus: manage, cancel, restore</a></li>
+      <li><a href="#delete">Deleting your data</a></li>
+      <li><a href="#contact">Contact</a></li>
+    </ol>
+  </div>
+
+  <h2 id="sync">1. Sync and the relay</h2>
+
+  <h3>How does sync work?</h3>
+  <p>
+    Your lists live on your phone. When you share with family, each change is
+    encrypted on your device and passed to the other devices through a small server
+    called a relay. By default that is the free PantryRun relay; it forwards sealed
+    data it cannot read. Lists work fully offline and catch up when you reconnect.
+  </p>
+
+  <h3>Can I use my own server instead?</h3>
+  <p>
+    Yes. Go to Settings → Sync Server → <strong>Self-Hosted</strong> and enter your
+    relay's address (for example <code>wss://relay.example.com</code> with port 443,
+    or <code>ws://relay.home.arpa</code> with port 8080 on a home network), then tap
+    <strong>Test Connection</strong>. Everyone in the family must use the same relay.
+    Switch back any time by choosing <strong>PantryRun (Free)</strong>.
+  </p>
+
+  <h3>My changes aren't showing up on another phone.</h3>
+  <ul>
+    <li>Make sure both phones are in the same family (the second one joined from an invite).</li>
+    <li>Open the app on both phones with a network connection; sync runs while the app is open.</li>
+    <li>In Settings → Relay Server, tap <strong>Test Connection</strong>. If it fails on a self-hosted relay, check the address and port.</li>
+    <li>If a phone was offline for more than 30 days, some relayed updates may have expired. Open PantryRun on that phone and on an up-to-date family phone at the same time; the two exchange whatever is missing.</li>
+  </ul>
+
+  <h2 id="invites">2. Inviting your family</h2>
+  <p>
+    On a phone that already has your lists, open Settings → Pairing Code and tap
+    <strong>Generate QR Code</strong>. Then either let the other person scan the QR
+    code from PantryRun's pairing screen, or tap <strong>Share Invite</strong> to
+    send them the link.
+  </p>
+  <ul>
+    <li>An invite is valid for <strong>7 days</strong> and works for <strong>one</strong> device. Make a new one for each person.</li>
+    <li>The new member also needs your family <strong>recovery phrase</strong> to unlock the shared lists. Share it in person or over a channel you trust.</li>
+    <li>If the link opens a web page instead of the app, make sure PantryRun is installed and up to date, then tap <strong>Open in PantryRun</strong> on that page.</li>
+  </ul>
+
+  <h2 id="recovery">3. The recovery phrase</h2>
+  <p>
+    Your 12-word recovery phrase is the key to your family's lists. Find it in
+    Settings → Security → <strong>View Recovery Phrase</strong>. Write it on paper and
+    keep it somewhere safe.
+  </p>
+  <ul>
+    <li><strong>New phone?</strong> Install PantryRun and use Settings → Security → <strong>Recover from Backup</strong>, or join from another family device.</li>
+    <li><strong>Lost it?</strong> As long as one family phone still has your lists, you can view the phrase again there.</li>
+    <li><strong>Lost every phone and the phrase?</strong> The lists cannot be recovered by anyone, including us. That is how the encryption works, not a support limitation.</li>
+    <li>It is not a cryptocurrency wallet phrase. Don't import it into wallet software.</li>
+  </ul>
+
+  <h2 id="prices">4. Prices and flyer scanning</h2>
+  <p>
+    Prices in PantryRun come from what you type, from flyer photos you scan, from an
+    optional community price pool, and from weekly deals and shelf prices for your
+    region. All of them are <strong>estimates</strong>: always check the price at the
+    shelf.
+  </p>
+  <ul>
+    <li><strong>Region:</strong> set the first three characters of your postal code (for example <code>M5V</code>) in Settings → Flipp Deal Matching. Your full postal code and your list are never sent.</li>
+    <li><strong>Flyer scanning:</strong> photograph the flyer page. The photo is stripped of location data on your phone and read by an automated step on the relay, then discarded. Unlike your lists, flyer photos are not end-to-end encrypted, so photograph the flyer, not your kitchen.</li>
+    <li><strong>A price looks wrong?</strong> Automated extraction can misread numbers or units. Edit the price, or clear stored prices in Settings → <strong>Clear Local Prices</strong>.</li>
+    <li><strong>No deals showing?</strong> Live prices cover a limited set of stores and regions, and need the relay to be reachable.</li>
+  </ul>
+
+  <h2 id="plus">5. PantryRun Plus: manage, cancel, restore</h2>
+  <p>
+    PantryRun Plus is an optional yearly subscription that unlocks the Trip Optimizer.
+    One purchase unlocks it for your whole family. It is billed by Apple or Google,
+    so they manage it, not us.
+  </p>
+  <h3>Cancel or change your subscription</h3>
+  <ul>
+    <li><strong>iPhone / iPad:</strong> Settings app → tap your name → <strong>Subscriptions</strong> → PantryRun → Cancel Subscription. (Or App Store → your profile picture → Subscriptions.)</li>
+    <li><strong>Android:</strong> Google Play Store → your profile picture → <strong>Payments &amp; subscriptions</strong> → Subscriptions → PantryRun → Cancel.</li>
+  </ul>
+  <p>
+    Cancelling stops the next renewal; Plus stays active until the end of the period
+    you paid for. Deleting the app does <strong>not</strong> cancel a subscription.
+  </p>
+  <h3>Restore a purchase</h3>
+  <p>
+    On a new phone or after reinstalling, open Settings → PantryRun Plus → tap
+    <strong>Restore Purchase</strong>, signed in to the same Apple ID or Google
+    account that bought it. Family devices pick up Plus automatically once they sync
+    with the device that bought it.
+  </p>
+  <h3>Refunds</h3>
+  <p>
+    Refunds are handled by the store under its own policy: Apple at
+    <a href="https://reportaproblem.apple.com" target="_blank" rel="noopener">reportaproblem.apple.com</a>,
+    Google from your Google Play order history. We can't issue store refunds
+    ourselves.
+  </p>
+
+  <h2 id="delete">6. Deleting your data</h2>
+  <ul>
+    <li><strong>Everything on this phone:</strong> Settings → Danger Zone → <strong>Delete All Data</strong>. This deletes your lists, settings, keys and device identity on this phone. Without your recovery phrase or another family device, it can't be undone.</li>
+    <li><strong>Leave the family but keep the app:</strong> Settings → Security → <strong>Leave Family</strong>.</li>
+    <li><strong>Copies elsewhere:</strong> deleting on one phone does not erase other family members' phones. Encrypted updates on the PantryRun relay expire automatically after 30 days; to have them removed sooner, email <a href="mailto:privacy@pantryrun.app">privacy@pantryrun.app</a>.</li>
+    <li><strong>iPhone note:</strong> iOS can keep an app's keychain entries after the app is deleted. Use Delete All Data before uninstalling if you want those gone too.</li>
+  </ul>
+  <p>
+    Full details are in the <a href="/privacy">privacy policy</a>.
+  </p>
+
+  <h2 id="contact">7. Contact</h2>
+  <p>
+    Support: <a href="mailto:support@pantryrun.app">support@pantryrun.app</a><br />
+    Privacy requests: <a href="mailto:privacy@pantryrun.app">privacy@pantryrun.app</a>
+  </p>
+  <p>
+    PantryRun is made by an independent developer in Ontario, Canada. We usually reply
+    within a few days.
+  </p>
+
+  <footer class="foot">
+    <a href="/privacy">Privacy Policy</a>
+    <a href="/terms">Terms of Service</a>
+    <a href="mailto:support@pantryrun.app">Contact</a>
+    <span class="spacer">© 2026 PantryRun</span>
+  </footer>
+
+</div>
+</body>
+</html>
