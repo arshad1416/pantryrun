@@ -68,3 +68,11 @@ describe('error-handler.ts', () => {
     expect(imports[0]).toBe("import './src/error-handler';");
   });
 });
+
+describe('screen wiring', () => {
+  it('the claim sweep refreshes the visible items when it released any', () => {
+    expect(read('src/screens/GroceryListScreen.tsx')).toMatch(
+      /if \(yjsSweepExpiredClaims\(listId\) > 0\) loadItems\(listId\)/,
+    );
+  });
+});
