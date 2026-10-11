@@ -132,6 +132,13 @@ export class YjsWebSocketClient {
   private inFlightBatches = new Map<string, { entries: OfflineEntry[]; timer: ReturnType<typeof setTimeout> }>();
   private flushRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private msgCounter = 0;
+  /**
+   * Highest relay seq applied per list. A snapshot claims to cover exactly
+   * these entries, so the relay can drop them (see sendSnapshot).
+   */
+  private seenSeq = new Map<string, number>();
+  /** What the relay's history replay held per list on this connection. */
+  private historyStats = new Map<string, { count: number; snapshots: number }>();
 
   // Callbacks
   onStateChange?: (state: ConnectionState) => void;
@@ -156,6 +163,11 @@ export class YjsWebSocketClient {
   onReconnected?: () => void;
   onRecoveryRequest?: (listId: string, requestId: string, senderDeviceId: string) => void;
   onRecoveryResponse?: (listId: string, update: Uint8Array) => void;
+  /**
+   * The relay finished replaying its stored history. Everything it holds has
+   * now been applied, so this is when snapshots can be published.
+   */
+  onHistoryComplete?: () => void;
 
   constructor(config: WebSocketConfig) {
     this.config = config;
@@ -304,6 +316,7 @@ export class YjsWebSocketClient {
       } else if (this.config.allowUnauthenticated) {
         // Test mode: skip auth, send identity directly
         this.authPending = false;
+        this.historyStats.clear();
         this.setState('connected');
         this.sendMessage({
           type: 'identity',
@@ -477,6 +490,54 @@ export class YjsWebSocketClient {
   }
 
   /**
+   * Publish a full-state snapshot (Y.encodeStateAsUpdate) for a list.
+   *
+   * The relay prunes stored history after 30 days and could not read a
+   * replacement, so a list nobody had touched for a month never reached a
+   * device that joined later: peers only answer sync requests for lists the
+   * asker already knows. A snapshot is stored like any update but flagged, and
+   * replaces the entries this device has applied (`coversSeq`); the relay
+   * never ages out a list's latest snapshot. Sent once the history replay is
+   * complete, so it covers everything the relay had.
+   *
+   * Best-effort and never queued: an offline device publishes on its next
+   * connect instead. Skipped for a list this device failed to decrypt — a
+   * wrong-key device must not replace the family's history with its own.
+   */
+  sendSnapshot(listId: string, update: Uint8Array): void {
+    if (!this.ready || this.disposed || this.state !== 'connected' || !this.ws) return;
+    if (this.config.canSendList?.(listId) === false || this.reportedDecryptFailures.has(listId)) return;
+    try {
+      this.sendMessage({
+        type: 'update',
+        familyId: this.config.familyId,
+        deviceId: this.config.deviceId,
+        listId,
+        payload: this.encryptUpdate(update, listId),
+        snapshot: true,
+        coversSeq: this.seenSeq.get(listId) ?? 0,
+      });
+    } catch (err) {
+      console.warn('YjsWebSocket: failed to send snapshot', err);
+    }
+  }
+
+  /**
+   * Whether a snapshot would change what the relay holds for this list: not
+   * when this connection's replay was already exactly one snapshot.
+   */
+  needsSnapshot(listId: string): boolean {
+    const stats = this.historyStats.get(listId);
+    return !(stats && stats.count === 1 && stats.snapshots === 1);
+  }
+
+  /** The local doc was replaced or destroyed: it no longer covers what it saw. */
+  forgetList(listId: string): void {
+    this.seenSeq.delete(listId);
+    this.historyStats.delete(listId);
+  }
+
+  /**
    * Flush queued updates to the relay server.
    *
    * Entries are merged per list (Y.mergeUpdates) into one frame each, and stay
@@ -587,6 +648,7 @@ export class YjsWebSocketClient {
           clearTimeout(this._ackTimeout);
           this._ackTimeout = null;
         }
+        this.historyStats.clear();
         this.setState('connected');
         this.sendMessage({
           type: 'identity',
@@ -653,8 +715,21 @@ export class YjsWebSocketClient {
             break;
           }
           this.noteDecryptOk(data.listId);
+          if (typeof data.seq === 'number' && data.seq > (this.seenSeq.get(data.listId) ?? 0)) {
+            this.seenSeq.set(data.listId, data.seq);
+          }
+          if (data.deviceId === 'stored-history') {
+            const stats = this.historyStats.get(data.listId) ?? { count: 0, snapshots: 0 };
+            stats.count++;
+            if (data.snapshot) stats.snapshots++;
+            this.historyStats.set(data.listId, stats);
+          }
           this.onRemoteUpdate?.(data.listId, decrypted);
         }
+        break;
+      }
+      case 'history_complete': {
+        this.onHistoryComplete?.();
         break;
       }
       case 'ack': {
@@ -916,7 +991,7 @@ export class YjsWebSocketClient {
 // ─── Relay Message Types ─────────────────────────────────────────────────────
 
 interface RelayMessage {
-  type: 'auth' | 'auth_ack' | 'identity' | 'update' | 'ack' | 'error' | 'notification' | 'sync_request' | 'recovery_request' | 'recovery_response';
+  type: 'auth' | 'auth_ack' | 'identity' | 'update' | 'ack' | 'error' | 'notification' | 'sync_request' | 'recovery_request' | 'recovery_response' | 'history_complete';
   familyId?: string;
   deviceId?: string;
   listId?: string;
@@ -926,4 +1001,9 @@ interface RelayMessage {
   /** Correlates a queued update with the relay's ack/error for it. */
   msgId?: string;
   retryAfterMs?: number;
+  /** Relay storage sequence number of an update (per list). */
+  seq?: number;
+  /** On send: this update is a full-state snapshot covering `coversSeq`. */
+  snapshot?: boolean;
+  coversSeq?: number;
 }

@@ -1630,7 +1630,7 @@ const server = createServer((req, res) => {
         }
 
         const { addUpdate } = require('./encrypted-store');
-        addUpdate(familyId, listId, payload);
+        const stored = addUpdate(familyId, listId, payload);
 
         // Broadcast to online family room clients
         const room = familyRooms.get(familyId);
@@ -1644,6 +1644,7 @@ const server = createServer((req, res) => {
                 deviceId: 'assistant-cloud',
                 listId,
                 payload,
+                seq: stored.seq,
               });
               relayed++;
             }
@@ -1910,7 +1911,9 @@ function handleMessage(sender, message) {
               familyId,
               deviceId: 'stored-history',
               listId: lId,
-              payload: update
+              payload: { ciphertext: update.ciphertext, iv: update.iv, tag: update.tag },
+              seq: update.seq,
+              snapshot: update.snapshot === true,
             });
             sentHistoryCount++;
           }
@@ -1921,6 +1924,10 @@ function handleMessage(sender, message) {
       } catch (err) {
         console.warn(`[identity] Failed to load update history: ${err.message}`);
       }
+      // Marks the end of the replay. Everything up to here is now applied on
+      // the client, which is the moment it can safely publish a snapshot that
+      // covers it (see addUpdate in encrypted-store.js).
+      sendTo(sender, { type: 'history_complete', familyId });
 
       break;
     }
@@ -2007,14 +2014,20 @@ function handleMessage(sender, message) {
         return;
       }
 
+      // A snapshot is the sender's full state for the list; it replaces the
+      // stored entries the sender says it has applied (seq <= coversSeq). The
+      // relay cannot verify that, and does not need to: only authenticated
+      // family devices write here.
+      const snapshot = message.snapshot === true;
+      const coversSeq = snapshot && Number.isFinite(message.coversSeq) ? message.coversSeq : 0;
+
       // Save update to encrypted-store (100% zero-knowledge persistence).
       // Stored before it is relayed and acknowledged: an ack is the sender's
       // licence to forget the update, so it must only follow a durable write.
-      let stored = false;
+      let stored = null;
       try {
         const { addUpdate } = require('./encrypted-store');
-        addUpdate(familyId, listId, payload);
-        stored = true;
+        stored = addUpdate(familyId, listId, payload, { snapshot, coversSeq });
       } catch (err) {
         console.warn(`[ws-update] Failed to save update: ${err.message}`);
       }
@@ -2031,6 +2044,7 @@ function handleMessage(sender, message) {
               deviceId,
               listId,
               payload,
+              seq: stored ? stored.seq : undefined,
             });
             relayed++;
           }
@@ -2043,6 +2057,7 @@ function handleMessage(sender, message) {
           type: 'ack',
           message: 'Update relayed',
           msgId,
+          seq: stored.seq,
         });
       } else {
         sendTo(sender, {
@@ -2263,6 +2278,7 @@ server.listen(RELAY_PORT, () => {
       }
       // Retention: age out stored encrypted updates (ciphertext-only, but
       // don't keep them forever). Default 30 days, override via UPDATE_TTL_MS.
+      // A list's latest snapshot is never aged out — see encrypted-store.js.
       try {
         const { cleanupExpiredUpdates } = require('./encrypted-store');
         const updateTtlMs = parseInt(process.env.UPDATE_TTL_MS || '2592000000', 10);

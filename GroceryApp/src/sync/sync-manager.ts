@@ -75,6 +75,8 @@ export class SyncManager {
   private ready = false;
   private copyTargets = new Set<string>();
   private unpublishedCopyTargets = new Set<string>();
+  /** Lists whose state vector went out at connect; others are new from replay. */
+  private reconciledAtConnect = new Set<string>();
 
   /**
    * Initialise the sync manager.
@@ -127,6 +129,10 @@ export class SyncManager {
     this.wsClient.onSyncRequest = (listId, stateVector) => {
       if (!current()) return;
       this.answerSyncRequest(listId, stateVector);
+    };
+    this.wsClient.onHistoryComplete = () => {
+      if (!current()) return;
+      this.publishSnapshots();
     };
 
     client.onRecoveryRequest = (listId, requestId, senderDeviceId) => {
@@ -187,6 +193,7 @@ export class SyncManager {
       cleanup();
       this.observedDocs.delete(listId);
     }
+    this.wsClient?.forgetList(listId);
     destroyDoc(listId);
   }
 
@@ -242,6 +249,7 @@ export class SyncManager {
    */
   private reconcileAll(): void {
     if (!this.wsClient) return;
+    this.reconciledAtConnect = new Set(getActiveDocIds());
     for (const listId of getActiveDocIds()) {
       if (listId.startsWith('__')) continue;
       if (this.recoveryPending.has(listId)) this.wsClient.requestRecovery(listId);
@@ -250,6 +258,27 @@ export class SyncManager {
         if (this.copyTargets.has(listId)) this.wsClient.sendUpdate(listId, Y.encodeStateAsUpdate(getDoc(listId)));
         this.wsClient.sendStateVector(listId, Y.encodeStateVector(getDoc(listId)));
       }
+    }
+  }
+
+  /**
+   * After the relay's history replay: publish a snapshot of every healthy
+   * list so the relay holds one complete copy (and can drop what it covers),
+   * and ask peers about lists first learned from the replay — reconcileAll
+   * ran before the replay, so it could not have asked about those.
+   */
+  private publishSnapshots(): void {
+    const client = this.wsClient;
+    if (!client) return;
+    for (const listId of getActiveDocIds()) {
+      if (listId.startsWith('__') || !this.observedDocs.has(listId)) continue;
+      if (this.recoveryPending.has(listId) || this.unpublishedCopyTargets.has(listId)) continue;
+      const doc = getDoc(listId);
+      // A doc with unresolved dependencies is missing history; a snapshot of
+      // it would tell the relay to drop entries it has not integrated.
+      if (doc.store.pendingStructs || doc.store.pendingDs || !extractList(listId)) continue;
+      if (!this.reconciledAtConnect.has(listId)) client.sendStateVector(listId, Y.encodeStateVector(doc));
+      if (client.needsSnapshot(listId)) client.sendSnapshot(listId, Y.encodeStateAsUpdate(doc));
     }
   }
 
