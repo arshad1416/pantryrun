@@ -267,14 +267,18 @@ export default function GroceryListScreen({ route, navigation }: Props) {
     }
   }, [listId, loadItems]);
 
+  // Store discovery asks the relay for the user's region, so it waits for the
+  // price opt-in; re-checked on focus, so opting in (Settings or the flyer
+  // scan prompt) loads stores without a restart.
   useEffect(() => {
+    if (!isFocused || !(getSettings().pricingOptedIn ?? false)) return;
     discoverStores()
       .then((stores) => {
         setAvailableStores(stores);
         setLiveStatus(getLivePriceStatus());
       })
       .catch(err => console.warn('[stores] Failed to load stores:', err));
-  }, []);
+  }, [isFocused, showFlyerScan]);
 
   // Fetch prices for basket items whose price is missing, older than an hour,
   // or was fetched under a different name (a rename is a different product).

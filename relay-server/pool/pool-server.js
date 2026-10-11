@@ -344,7 +344,7 @@ async function handleContribute(req, res, store) {
   const normalizedName = itemName.toLowerCase().trim();
   const key = `${storeId}:${normalizedName}:${flyerWeek}`;
 
-  store.addReport(key, price, validTo);
+  store.addReport(key, price, validTo, { storeId, itemName: normalizedName, flyerWeek });
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ status: 'ok', key }));

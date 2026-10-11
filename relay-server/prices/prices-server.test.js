@@ -362,3 +362,106 @@ describe('relay /api/prices end to end (fake Turso)', () => {
     expect(output).not.toContain(READ_TOKEN);
   });
 });
+
+// ─── 4. The SQL itself, against a real SQLite ───────────────────────────────
+
+let sqlite = null;
+try {
+  // Node ≥ 22.5. Older runtimes skip these (the handler tests above still run).
+  sqlite = require('node:sqlite');
+} catch {
+  sqlite = null;
+}
+
+(sqlite ? describe : describe.skip)('price queries (SQLite)', () => {
+  const { sqlFor, MAX_ROWS } = jest.requireActual('./prices-server');
+  let db;
+
+  beforeEach(() => {
+    db = new sqlite.DatabaseSync(':memory:');
+    db.exec(`CREATE TABLE store_prices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, store_id TEXT NOT NULL, store_name TEXT NOT NULL,
+      name TEXT NOT NULL, name_clean TEXT NOT NULL, price TEXT NOT NULL, price_real REAL,
+      unit_price TEXT, unit_price_real REAL, unit TEXT, image_url TEXT, brand TEXT, category TEXT,
+      is_on_sale INTEGER DEFAULT 0, sale_price REAL, was_price REAL, postal_code TEXT NOT NULL,
+      scraped_at TEXT NOT NULL DEFAULT (datetime('now')), source TEXT NOT NULL DEFAULT 'scraper',
+      UNIQUE(store_id, name_clean, postal_code))`);
+    db.exec(`CREATE TABLE flipp_deals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, flyer_id INTEGER, merchant TEXT, postal_code TEXT,
+      name TEXT, price TEXT, price_real REAL, brand TEXT, image_url TEXT, valid_from TEXT, valid_to TEXT)`);
+  });
+
+  function addShelf(store, name, price, daysAgo, postal = 'L0R2H4') {
+    db.prepare(`INSERT INTO store_prices (store_id, store_name, name, name_clean, price, price_real, postal_code, scraped_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', ?))`)
+      .run(store, store, name, name.toLowerCase(), String(price), price, postal, `-${daysAgo} days`);
+  }
+
+  function addDeal(merchant, name, price, postal = 'L0R2H4') {
+    db.prepare(`INSERT INTO flipp_deals (merchant, postal_code, name, price, price_real, valid_from, valid_to)
+                VALUES (?, ?, ?, ?, ?, date('now'), date('now', '+5 days'))`).run(merchant, postal, name, String(price), price);
+  }
+
+  test('shelf: newest scrape per product across postal codes; older cheaper rows dropped', () => {
+    addShelf('nofrills', 'Milk 4 L', 4.49, 5, 'L0R1A1'); // older, cheaper, another postal code
+    addShelf('nofrills', 'Milk 4 L', 5.99, 1, 'L0R2H4');
+    addShelf('nofrills', 'Bread', 2.99, 2);
+    const rows = db.prepare(sqlFor('shelf', MAX_ROWS + 1)).all('L0R%');
+    expect(rows.map((r) => [r.name, r.price_real])).toEqual(expect.arrayContaining([['Milk 4 L', 5.99], ['Bread', 2.99]]));
+    expect(rows).toHaveLength(2);
+  });
+
+  test('shelf: the cap trims every store evenly, not alphabetically-late stores', () => {
+    for (let i = 0; i < 5; i++) {
+      addShelf('loblaws', `Item ${i}`, 1 + i, 1);
+      addShelf('superstore', `Item ${i}`, 1 + i, 1);
+    }
+    const rows = db.prepare(sqlFor('shelf', 6)).all('L0R%');
+    const perStore = rows.reduce((m, r) => ({ ...m, [r.store_id]: (m[r.store_id] || 0) + 1 }), {});
+    expect(perStore).toEqual({ loblaws: 3, superstore: 3 });
+  });
+
+  test('deals: duplicates across postal codes collapse; merchants interleave under the cap', () => {
+    addDeal('Food Basics', 'Grapes', 2.99, 'L0R1A1');
+    addDeal('Food Basics', 'Grapes', 2.99, 'L0R2H4');
+    for (let i = 0; i < 5; i++) {
+      addDeal('Food Basics', `Deal ${i}`, 1 + i);
+      addDeal('Zehrs', `Deal ${i}`, 1 + i);
+    }
+    const all = db.prepare(sqlFor('deals', MAX_ROWS + 1)).all('L0R%');
+    expect(all.filter((r) => r.name === 'Grapes')).toHaveLength(1);
+    const capped = db.prepare(sqlFor('deals', 6)).all('L0R%');
+    expect(capped.filter((r) => r.merchant === 'Zehrs')).toHaveLength(3);
+  });
+});
+
+describe('truncation flag', () => {
+  beforeEach(() => jest.resetModules());
+  afterEach(() => jest.dontMock('./turso-reader'));
+
+  test('a capped answer says truncated and carries exactly MAX_ROWS rows', async () => {
+    const big = (n) => Array.from({ length: n }, (_, i) => ({ ...SHELF_ROWS[0], name: `Item ${i}` }));
+    let rowsToReturn = big(10);
+    jest.doMock('./turso-reader', () => ({ isConfigured: () => true, query: async () => rowsToReturn, TursoError: Error }));
+    const server = require('./prices-server');
+    server._resetPricesState();
+    const enrolled = new Map([['t', { expiresAt: Date.now() + 60_000 }]]);
+    const ask = async () => {
+      server._resetPricesState();
+      const res = mockRes();
+      await server.handlePricesRequest(mockReq('/api/prices/shelf?fsa=L0R', { token: 't' }), res, enrolled);
+      return res.body;
+    };
+
+    expect((await ask()).truncated).toBe(false);
+
+    rowsToReturn = big(server.MAX_ROWS + 1);
+    const cut = await ask();
+    expect(cut.truncated).toBe(true);
+    expect(cut.rows).toHaveLength(server.MAX_ROWS);
+
+    // Exactly MAX_ROWS rows is a complete answer, not a truncated one.
+    rowsToReturn = big(server.MAX_ROWS);
+    expect((await ask()).truncated).toBe(false);
+  });
+});

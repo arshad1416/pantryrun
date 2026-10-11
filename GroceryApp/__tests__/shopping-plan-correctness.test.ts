@@ -17,6 +17,7 @@ import {
   analyzeBasket,
   compareSavings,
   planForStores,
+  primaryOffer,
   selectBasketItems,
   solvePlan,
   type BasketItem,
@@ -48,7 +49,7 @@ jest.mock('../src/config/settings', () => ({
   getSettings: () => ({ pricingOptedIn: true }),
 }));
 jest.mock('../src/pricing/registry', () => ({
-  priceRegistry: { getAllPrices: jest.fn(), getPrice: jest.fn() },
+  priceRegistry: { getAllPrices: jest.fn(), getAllCandidates: jest.fn(), getPrice: jest.fn() },
 }));
 jest.mock('../src/pricing/crowdsourced', () => ({ crowdsourcedAdapter: {} }));
 
@@ -709,20 +710,20 @@ describe('F. recomputation', () => {
 });
 
 describe('F. price-store ordering and refresh failures', () => {
-  type Deferred = { resolve: (m: Map<string, PriceResult>) => void; reject: (e: Error) => void };
+  type Deferred = { resolve: (m: Map<string, PriceResult[]>) => void; reject: (e: Error) => void };
   let pending: Deferred[];
 
   beforeEach(() => {
     usePriceStore.getState().clearPrices();
     usePriceStore.getState().clearPerStorePrices();
     pending = [];
-    (priceRegistry.getAllPrices as jest.Mock).mockImplementation(
+    (priceRegistry.getAllCandidates as jest.Mock).mockImplementation(
       () => new Promise((resolve, reject) => pending.push({ resolve, reject } as Deferred)),
     );
   });
 
   const items = [{ id: 'milk', name: 'milk' }];
-  const result = (p: number) => new Map([['milk', simple(p)]]);
+  const result = (p: number) => new Map([['milk', [simple(p)]]]);
 
   it('an older request resolving last cannot revert a newer price', async () => {
     const older = usePriceStore.getState().loadPricesForAllStores(items, ['s1']);
@@ -731,7 +732,7 @@ describe('F. price-store ordering and refresh failures', () => {
     await newer;
     pending[0].resolve(result(5.99)); // stale answer arrives late
     await older;
-    expect(usePriceStore.getState().perStorePrices.s1.milk.price).toBe(3.49);
+    expect(primaryOffer(usePriceStore.getState().perStorePrices.s1.milk)!.price).toBe(3.49);
   });
 
   it('an older batch cannot overwrite a newer single-item edit', async () => {
@@ -740,7 +741,7 @@ describe('F. price-store ordering and refresh failures', () => {
     await usePriceStore.getState().loadSinglePrice('milk', 'milk', 's1');
     pending[0].resolve(result(5.99));
     await batch;
-    expect(usePriceStore.getState().perStorePrices.s1.milk.price).toBe(2.5);
+    expect(primaryOffer(usePriceStore.getState().perStorePrices.s1.milk)!.price).toBe(2.5);
   });
 
   it('a failed refresh keeps last-known prices flagged, never as freshly verified', async () => {
@@ -752,7 +753,7 @@ describe('F. price-store ordering and refresh failures', () => {
     pending[1].reject(new Error('offline'));
     await refresh;
     const state = usePriceStore.getState();
-    const milk = state.perStorePrices.s1.milk;
+    const milk = primaryOffer(state.perStorePrices.s1.milk)!;
     expect(milk.price).toBe(3.49);
     expect(milk.refreshFailedAt).toBeDefined();
     expect(state.error).toContain('offline');
@@ -767,7 +768,7 @@ describe('F. price-store ordering and refresh failures', () => {
     const second = usePriceStore.getState().loadPricesForAllStores(items, ['s1']);
     pending[1].resolve(new Map());
     await second;
-    const milk = usePriceStore.getState().perStorePrices.s1.milk;
+    const milk = primaryOffer(usePriceStore.getState().perStorePrices.s1.milk)!;
     expect(milk.unavailable).toBe('withdrawn');
     expect(assessOffer(milk, { name: 'milk' }, { now: Date.now() }).eligible).toBe(false);
   });

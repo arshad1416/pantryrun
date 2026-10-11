@@ -417,8 +417,9 @@ const { PoolStore } = require('./pool/store');
 const { handlePoolRequest, setUsedTokensStore } = require('./pool/pool-server');
 const { seedTestData } = require('./seed-pool');
 const poolStore = new PoolStore();
-// Seed test data on startup
-seedTestData(poolStore);
+// Fake pool prices are development/test data, served unauthenticated by
+// GET /api/pool/prices — seed them only when explicitly asked to.
+if (process.env.POOL_SEED_TEST_DATA === '1') seedTestData(poolStore);
 // Wire the used-tokens store into the pool server
 setUsedTokensStore(usedTokensStore);
 

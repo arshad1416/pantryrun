@@ -266,6 +266,7 @@ describe('submitContributions — Privacy Gate', () => {
       contributeConsentShown: true,
       relayUrl: 'ws://localhost',
       relayPort: 8080,
+      flippFsa: 'M5V', // contributions are filed per region
     } as any);
 
     const prices = [makeScannedPrice()];

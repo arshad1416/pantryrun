@@ -25,16 +25,23 @@
 
 import { create } from 'zustand';
 import type { PriceResult, SubmittedPrice } from './types';
+import type { Offers } from './basket';
 import { priceRegistry } from './registry';
 import { crowdsourcedAdapter } from './crowdsourced';
+import { flyerScanAdapter } from './flyer-scan';
+import { clearLocalPriceRecords } from './local-price-records';
 
 // ─── State Shape ────────────────────────────────────────────────────────────
 
 export interface PriceState {
   /** Prices keyed by itemId */
   prices: Record<string, PriceResult>;
-  /** Per-store prices: storeId → itemId → PriceResult */
-  perStorePrices: Record<string, Record<string, PriceResult>>;
+  /**
+   * Per-store offers: storeId → itemId → candidate offer(s), best match
+   * first. Several candidates (a 4 L jug and a 1 L carton for "milk") go to
+   * the basket, which picks the eligible one that costs least.
+   */
+  perStorePrices: Record<string, Record<string, Offers>>;
   /** Loading flag for batch loads */
   isLoading: boolean;
   /** Per-item loading states */
@@ -65,6 +72,11 @@ export interface PriceState {
   ) => Promise<void>;
   getItemPrice: (itemId: string) => PriceResult | null;
   getStoreIdsWithPrices: () => string[];
+  /**
+   * Clear loaded prices and the prices this device recorded itself (crowd
+   * submissions, flyer scans), in memory and on disk. Used by "Clear Local
+   * Prices" and "Delete All Data".
+   */
   clearPrices: () => void;
   clearPerStorePrices: () => void;
   clearError: () => void;
@@ -102,8 +114,21 @@ function claim(storeId: string, itemId: string, seq: number): boolean {
   return true;
 }
 
-function withdrawn(pr: PriceResult): PriceResult {
-  return { ...pr, unavailable: 'withdrawn' };
+function mapOffers(o: Offers, fn: (pr: PriceResult) => PriceResult): Offers {
+  return Array.isArray(o) ? o.map(fn) : fn(o);
+}
+
+function isWithdrawn(o: Offers): boolean {
+  return Array.isArray(o) ? o.every((pr) => !!pr.unavailable) : !!o.unavailable;
+}
+
+function withdrawn(o: Offers): Offers {
+  return mapOffers(o, (pr) => ({ ...pr, unavailable: 'withdrawn' }));
+}
+
+/** One candidate is stored as itself, several as a ranked list. */
+function asOffers(list: PriceResult[]): Offers {
+  return list.length === 1 ? list[0] : list;
 }
 
 // ─── Store ──────────────────────────────────────────────────────────────────
@@ -137,10 +162,10 @@ export const usePriceStore = create<PriceState>((set, get) => ({
 
       for (const [storeId, groupItems] of storeGroups) {
         const itemNames = groupItems.map((i) => i.name);
-        const results = await priceRegistry.getAllPrices(itemNames, storeId);
+        const results = await priceRegistry.getAllCandidates(itemNames, storeId);
 
         for (const groupItem of groupItems) {
-          const result = results.get(groupItem.name);
+          const result = results.get(groupItem.name)?.[0];
           if (result) {
             newPrices[groupItem.id] = result;
           }
@@ -177,7 +202,7 @@ export const usePriceStore = create<PriceState>((set, get) => ({
         const storePrices = { ...(state.perStorePrices[storeId] ?? {}) };
         const previous = storePrices[itemId];
         if (result) storePrices[itemId] = result;
-        else if (previous && !previous.unavailable) storePrices[itemId] = withdrawn(previous);
+        else if (previous && !isWithdrawn(previous)) storePrices[itemId] = withdrawn(previous);
         else return { itemLoading };
         return {
           prices: result ? { ...state.prices, [itemId]: result } : state.prices,
@@ -197,7 +222,7 @@ export const usePriceStore = create<PriceState>((set, get) => ({
     const seq = nextSeq();
     try {
       /** Stores that answered — only these may overwrite or withdraw prices. */
-      const results: Record<string, Record<string, PriceResult>> = {};
+      const results: Record<string, Record<string, PriceResult[]>> = {};
       const failures: Record<string, string> = {};
 
       await Promise.all(
@@ -206,12 +231,12 @@ export const usePriceStore = create<PriceState>((set, get) => ({
             const itemNames = items.map((i) => i.name);
             // NOTE: never log item names here — plaintext item names in logs
             // would contradict the hashed-lookup privacy contract (AC-14).
-            const priceMap = await priceRegistry.getAllPrices(itemNames, storeId);
-            const storeResult: Record<string, PriceResult> = {};
+            const priceMap = await priceRegistry.getAllCandidates(itemNames, storeId);
+            const storeResult: Record<string, PriceResult[]> = {};
             for (const item of items) {
-              const result = priceMap.get(item.name);
-              if (result) {
-                storeResult[item.id] = result;
+              const candidates = priceMap.get(item.name);
+              if (candidates && candidates.length > 0) {
+                storeResult[item.id] = candidates;
               }
             }
             results[storeId] = storeResult;
@@ -233,12 +258,12 @@ export const usePriceStore = create<PriceState>((set, get) => ({
           const merged = { ...(perStorePrices[storeId] ?? {}) };
           for (const item of items) {
             if (!claim(storeId, item.id, seq)) continue; // a newer lookup or edit already landed
-            const result = storeResult[item.id];
-            if (result) {
-              merged[item.id] = result;
-              prices[item.id] = result;
+            const candidates = storeResult[item.id];
+            if (candidates) {
+              merged[item.id] = asOffers(candidates);
+              prices[item.id] = candidates[0];
               priceTimestamps[item.id] = now;
-            } else if (merged[item.id] && !merged[item.id].unavailable) {
+            } else if (merged[item.id] && !isWithdrawn(merged[item.id])) {
               // The store answered and no longer lists it: never keep it as live.
               merged[item.id] = withdrawn(merged[item.id]);
             }
@@ -256,7 +281,7 @@ export const usePriceStore = create<PriceState>((set, get) => ({
             const pr = marked[item.id];
             if (pr && seq >= (appliedSeq.get(seqKey(storeId, item.id)) ?? 0)) {
               // Last-known price: still shown and usable for an estimate, never verified.
-              marked[item.id] = { ...pr, refreshFailedAt: now };
+              marked[item.id] = mapOffers(pr, (o) => ({ ...o, refreshFailedAt: now }));
             }
           }
           perStorePrices[storeId] = marked;
@@ -312,6 +337,10 @@ export const usePriceStore = create<PriceState>((set, get) => ({
 
   clearPrices: () => {
     set({ prices: {}, error: null, priceTimestamps: {} });
+    crowdsourcedAdapter.clearAllPrices?.();
+    flyerScanAdapter.clearAllPrices?.();
+    void clearLocalPriceRecords().catch((err) =>
+      console.warn('[prices] failed to clear local price records:', err instanceof Error ? err.message : err));
   },
 
   clearPerStorePrices: () => {

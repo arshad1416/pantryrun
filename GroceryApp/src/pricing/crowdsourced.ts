@@ -2,8 +2,14 @@
  * Price Subsystem — Crowd-Sourced Adapter.
  *
  * Full implementation of the PriceAdapter interface using locally submitted
- * prices from family members. Prices are stored in-memory (Map) keyed by
- * normalized item name and store ID.
+ * prices from family members, keyed by normalized item name and store ID.
+ * The singleton persists submissions on the device, encrypted at rest
+ * (local-price-records.ts), so they survive a restart.
+ *
+ * Sample ("seed") prices exist only in development builds and are always
+ * marked isDemo. They never blend with a real submission: once any family
+ * member has reported a price for an item at a store, the seeds for it are
+ * ignored. Release builds never create them.
  *
  * Confidence scoring:
  *   - 0 submissions        → not available
@@ -21,6 +27,7 @@ import type {
 } from './types';
 import { normalizeUnitPrice } from './normalizer';
 import { generateUUID } from '../crypto';
+import { clearLocalPriceRecords, LOCAL_PRICE_ALIASES, loadLocalPriceRecords, saveLocalPriceRecords } from './local-price-records';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -30,6 +37,24 @@ type StorePriceMap = Map<string, SubmittedPrice[]>;
 
 /** `submittedBy` of the built-in sample prices. */
 const SEED_SUBMITTER = 'system-seed';
+
+/** Submissions older than this are not kept on disk. */
+const RETAIN_MS = 90 * 24 * 60 * 60 * 1000;
+/** Most submissions kept on disk (newest win). */
+const MAX_STORED = 1000;
+
+/** Development builds only (Metro's __DEV__; NODE_ENV outside React Native). */
+export function isDevBuild(): boolean {
+  const dev = (globalThis as { __DEV__?: boolean }).__DEV__;
+  return typeof dev === 'boolean' ? dev : process.env.NODE_ENV !== 'production';
+}
+
+export interface CrowdsourcedOptions {
+  /** Create the sample prices (default: development builds only). */
+  seedDemo?: boolean;
+  /** Persist submissions on the device (the app's singleton does). */
+  persist?: boolean;
+}
 
 function normalizeItemName(name: string): string {
   return name.toLowerCase().trim();
@@ -57,8 +82,42 @@ export class CrowdsourcedAdapter implements PriceAdapter {
   /** Maximum age of submissions to consider (30 days in ms) */
   private readonly maxAgeMs = 30 * 24 * 60 * 60 * 1000;
 
-  constructor() {
-    this.seedDefaultPrices();
+  private readonly seedDemo: boolean;
+  private readonly persist: boolean;
+  private hydration: Promise<void> | null = null;
+
+  constructor(options: CrowdsourcedOptions = {}) {
+    this.seedDemo = options.seedDemo ?? isDevBuild();
+    this.persist = options.persist ?? false;
+    if (this.seedDemo) this.seedDefaultPrices();
+  }
+
+  /** Load persisted submissions once, before the first read or write. */
+  private ensureLoaded(): Promise<void> {
+    if (!this.persist) return Promise.resolve();
+    if (!this.hydration) {
+      this.hydration = loadLocalPriceRecords<SubmittedPrice>(LOCAL_PRICE_ALIASES.crowd).then((records) => {
+        for (const r of records) {
+          if (r && typeof r.itemName === 'string' && typeof r.storeId === 'string' && typeof r.price === 'number') {
+            this.addPriceSync(r, r.id, r.timestamp);
+          }
+        }
+      });
+    }
+    return this.hydration;
+  }
+
+  /** Every real (non-seed) submission still worth keeping, newest last. */
+  private storedSubmissions(now: number = Date.now()): SubmittedPrice[] {
+    const all: SubmittedPrice[] = [];
+    for (const storeMap of this.prices.values()) {
+      for (const list of storeMap.values()) {
+        for (const s of list) {
+          if (s.submittedBy !== SEED_SUBMITTER && s.timestamp >= now - RETAIN_MS) all.push(s);
+        }
+      }
+    }
+    return all.sort((a, b) => a.timestamp - b.timestamp).slice(-MAX_STORED);
   }
 
   /**
@@ -113,8 +172,10 @@ export class CrowdsourcedAdapter implements PriceAdapter {
   async submitPrice(
     price: Omit<SubmittedPrice, 'id' | 'timestamp'>,
   ): Promise<void> {
+    await this.ensureLoaded();
     const id = await generateUUID();
     this.addPriceSync(price, id, Date.now());
+    if (this.persist) await saveLocalPriceRecords(LOCAL_PRICE_ALIASES.crowd, this.storedSubmissions());
   }
 
   /**
@@ -153,6 +214,7 @@ export class CrowdsourcedAdapter implements PriceAdapter {
     itemName: string,
     storeId: string,
   ): Promise<PriceResult | null> {
+    await this.ensureLoaded();
     const key = normalizeItemName(itemName);
     const storeMap = this.prices.get(storeId);
     if (!storeMap) return null;
@@ -162,7 +224,12 @@ export class CrowdsourcedAdapter implements PriceAdapter {
 
     // Filter to last 30 days
     const cutoff = Date.now() - this.maxAgeMs;
-    const recent = submissions.filter((s) => s.timestamp >= cutoff);
+    const inWindow = submissions.filter((s) => s.timestamp >= cutoff);
+    // A real report always replaces the samples: seeds never blend into a
+    // median with family-reported prices, and never appear without seedDemo.
+    const real = inWindow.filter((s) => s.submittedBy !== SEED_SUBMITTER);
+    const recent = real.length > 0 ? real : this.seedDemo ? inWindow : [];
+    const isDemo = real.length === 0;
 
     if (recent.length === 0) return null;
 
@@ -198,7 +265,7 @@ export class CrowdsourcedAdapter implements PriceAdapter {
       confidence: getConfidenceLevel(recent.length),
       ...(median.quantity > 0 ? { packageSize: median.quantity } : {}),
       // Seeded sample prices are demo data, never an observed shelf price.
-      ...(recent.every((s) => s.submittedBy === SEED_SUBMITTER) ? { isDemo: true } : {}),
+      ...(isDemo ? { isDemo: true } : {}),
     };
   }
 
@@ -227,6 +294,7 @@ export class CrowdsourcedAdapter implements PriceAdapter {
     storeId: string,
     days: number,
   ): Promise<PriceResult[]> {
+    await this.ensureLoaded();
     const key = normalizeItemName(itemName);
     const storeMap = this.prices.get(storeId);
     if (!storeMap) return [];
@@ -235,7 +303,7 @@ export class CrowdsourcedAdapter implements PriceAdapter {
     if (!submissions) return [];
 
     const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-    const recent = submissions.filter((s) => s.timestamp >= cutoff);
+    const recent = submissions.filter((s) => s.timestamp >= cutoff && s.submittedBy !== SEED_SUBMITTER);
     const unit = recent.length > 0 ? recent[0].unit : 'each';
 
     return recent.map((s) => {
@@ -274,21 +342,22 @@ export class CrowdsourcedAdapter implements PriceAdapter {
    */
   clearAllPrices(): void {
     this.prices.clear();
+    // Nothing left to hydrate, in memory or on disk.
+    this.hydration = Promise.resolve();
+    if (this.persist) void clearLocalPriceRecords([LOCAL_PRICE_ALIASES.crowd]).catch(() => {});
   }
 
   /**
    * Get list of stores that have crowd-sourced price data.
    */
   async getAvailableStores(): Promise<{ storeId: string; storeName: string }[]> {
+    await this.ensureLoaded();
     const stores: { storeId: string; storeName: string }[] = [];
     for (const [storeId, itemMap] of this.prices) {
-      if (itemMap.size > 0) {
-        // Get store name from first submission
-        const items = Array.from(itemMap.values());
-        const firstItem = items.find(arr => arr.length > 0);
-        const name = firstItem && firstItem[0] ? firstItem[0].storeName : storeId;
-        stores.push({ storeId, storeName: name });
-      }
+      // Get store name from first submission
+      const first = Array.from(itemMap.values()).flat()
+        .find((s) => this.seedDemo || s.submittedBy !== SEED_SUBMITTER);
+      if (first) stores.push({ storeId, storeName: first.storeName || storeId });
     }
     return stores.sort((a, b) => a.storeName.localeCompare(b.storeName));
   }
@@ -296,4 +365,4 @@ export class CrowdsourcedAdapter implements PriceAdapter {
 
 // ─── Singleton ──────────────────────────────────────────────────────────────
 
-export const crowdsourcedAdapter = new CrowdsourcedAdapter();
+export const crowdsourcedAdapter = new CrowdsourcedAdapter({ persist: true });

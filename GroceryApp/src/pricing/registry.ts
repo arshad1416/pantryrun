@@ -1,8 +1,10 @@
 /**
  * Price Subsystem — Adapter Registry.
  *
- * Manages the chain of price adapters with fallback:
- *   official → crowd → scraping
+ * Manages the chain of price adapters, in priority order:
+ *   official → flyer → crowd → scraping
+ * getPrice answers with the first adapter's best match; getAllCandidates
+ * gathers every adapter's candidates for the basket to choose among.
  *
  * Each adapter can be individually enabled/disabled by the user via Settings.
  * The enabled state is stored in encrypted settings.
@@ -80,15 +82,34 @@ class PriceRegistry {
   }
 
   /**
-   * Get prices for multiple items.
+   * Get prices for multiple items: the highest-priority candidate per item
+   * (see getAllCandidates).
    */
   async getAllPrices(
     items: string[],
     storeId: string,
   ): Promise<Map<string, PriceResult>> {
+    const results = new Map<string, PriceResult>();
+    for (const [item, list] of await this.getAllCandidates(items, storeId)) {
+      if (list[0]) results.set(item, list[0]);
+    }
+    return results;
+  }
+
+  /**
+   * Every adapter's candidate offers per item, in adapter priority order
+   * (each adapter's own ranking within). Nothing is dropped because a
+   * higher-priority adapter answered first: a flyer deal and a cheaper
+   * shelf price both reach the basket, whose eligibility and purchase math
+   * pick the offer actually used.
+   */
+  async getAllCandidates(
+    items: string[],
+    storeId: string,
+  ): Promise<Map<string, PriceResult[]>> {
     if (!this.isPricingOptedIn()) return new Map();
     if (this.seedPromise) await this.seedPromise;
-    const results = new Map<string, PriceResult>();
+    const results = new Map<string, PriceResult[]>();
     const enabled = this.getEnabledMap();
     const normalizedNames = items.map(normalizeForLookup);
 
@@ -100,15 +121,17 @@ class PriceRegistry {
         ? items.map(hashItemName)
         : normalizedNames;
 
-      const batch = await adapter.getPrices(lookupNames, storeId);
+      const batch: Map<string, PriceResult[] | PriceResult> = adapter.getCandidates
+        ? await adapter.getCandidates(lookupNames, storeId)
+        : await adapter.getPrices(lookupNames, storeId);
       // Map results back to original item names
       for (let i = 0; i < items.length; i++) {
-        const lookupKey = lookupNames[i];
+        const found = batch.get(lookupNames[i]);
+        if (!found) continue;
+        const list = Array.isArray(found) ? found : [found];
+        if (list.length === 0) continue;
         const originalName = items[i];
-        const priceResult = batch.get(lookupKey);
-        if (priceResult && !results.has(originalName)) {
-          results.set(originalName, priceResult);
-        }
+        results.set(originalName, [...(results.get(originalName) ?? []), ...list]);
       }
     }
     return results;

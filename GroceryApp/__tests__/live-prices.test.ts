@@ -59,7 +59,7 @@ const realFetch = global.fetch;
 
 beforeEach(() => {
   _resetLivePrices();
-  mockSettings = { relayUrl: 'wss://relay.example.com', relayPort: 8080, flippFsa: 'L0R 2H4' };
+  mockSettings = { relayUrl: 'wss://relay.example.com', relayPort: 8080, flippFsa: 'L0R 2H4', pricingOptedIn: true };
   relayStatus = 200;
   requests = [];
   dealRows = [];
@@ -124,10 +124,20 @@ describe('1. relay requests', () => {
     expect(requests).toHaveLength(3); // deals + shelf, forced
   });
 
-  it('a bad FSA falls back to Waterdown (L0R)', async () => {
-    mockSettings.flippFsa = 'nonsense';
+  it.each([undefined, '', 'nonsense'])('no usable FSA (%j): nothing fetched, the price banner asks for a postal code', async (fsa) => {
+    mockSettings.flippFsa = fsa;
+    expect(await flippDealsAdapter.getAvailableStores()).toEqual([]);
+    expect(await storePricesAdapter.getPrices(['milk'], 'no-frills')).toEqual(new Map());
+    // Never silently priced as Niagara (L0R) or anywhere else.
+    expect(requests).toHaveLength(0);
+    expect(getLivePriceStatus()).toMatchObject({ state: 'failed', reason: 'region_missing' });
+    expect(getLivePriceStatus().detail).toMatch(/postal code/i);
+  });
+
+  it("uses the user's own FSA", async () => {
+    mockSettings.flippFsa = 'm5v 2h1';
     await flippDealsAdapter.getAvailableStores();
-    expect(requests[0].url).toContain('fsa=L0R');
+    expect(requests[0].url).toContain('fsa=M5V');
   });
 
   it('no relay → unavailable and nothing fetched', async () => {
@@ -136,6 +146,19 @@ describe('1. relay requests', () => {
     expect(storePricesAdapter.isAvailable()).toBe(false);
     expect(await discoverStores()).toEqual(expect.not.arrayContaining([expect.objectContaining({ storeId: 'fortinos' })]));
     expect(requests).toHaveLength(0);
+  });
+
+  it.each([false, undefined])('not opted into prices (%s) → no store discovery, nothing fetched', async (optedIn) => {
+    dealRows = [{ merchant: 'Fortinos', name: 'Milk 4 L', price: '5.99', price_real: 5.99, valid_from: null, valid_to: inDays(3) } as unknown as FlyerDealRow];
+    mockSettings.pricingOptedIn = optedIn;
+    expect(await discoverStores()).toEqual([]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it('the list screen only discovers stores after the price opt-in', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, '../src/screens/GroceryListScreen.tsx'), 'utf8');
+    const effect = src.slice(src.lastIndexOf('useEffect', src.indexOf('discoverStores()')), src.indexOf('discoverStores()'));
+    expect(effect).toMatch(/if \(!isFocused \|\| !\(getSettings\(\)\.pricingOptedIn \?\? false\)\) return;/);
   });
 });
 
@@ -171,10 +194,10 @@ describe('2. flyer deal → PriceResult', () => {
     expect(soup.multiBuy).toEqual({ groupSize: 2, groupPrice: 5, requiresFullGroup: false });
   });
 
-  it('package sizes come from the name; multipacks are not guessed', () => {
+  it('package sizes come from the name, multipacks included', () => {
     expect(packageFromName('Lactantia Lactose Free Milk 2 L')).toEqual({ packageSize: 2, unit: 'L' });
     expect(packageFromName('Old Cheddar 400 g')).toEqual({ packageSize: 400, unit: 'g' });
-    expect(packageFromName('Coca-Cola 12 x 355 mL')).toBeNull();
+    expect(packageFromName('Coca-Cola 12 x 355 mL')).toEqual({ packageSize: 4260, unit: 'ml' });
     expect(packageFromName('Jamaican Beef Patties')).toBeNull();
   });
 
