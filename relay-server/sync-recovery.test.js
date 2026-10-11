@@ -29,7 +29,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {sockets.forEach(s=>s.terminate());if(child&&child.exitCode===null){const exited=new Promise(r=>child.once('exit',r));child.kill('SIGKILL');await exited;}if(directory)fs.rmSync(directory,{recursive:true,force:true});});
 
-test.each(['sync_request','recovery_request','recovery_response'])('forwards %s ciphertext within the authenticated family without storing it as a grocery update',async type=>{
+test.each(['notification','sync_request','recovery_request','recovery_response'])('forwards %s ciphertext within the authenticated family without storing it as a grocery update',async type=>{
   const a=await connect('a','family','a');const b=await connect('b','family','b');const c=await connect('c','other-family','c');const cross=[];c.on('message',raw=>cross.push(JSON.parse(raw)));
   const received=waitFor(b,f=>f.type===type);a.send(JSON.stringify({type,familyId:'family',deviceId:'spoofed',listId:'list',payload}));
   expect(await received).toEqual({type,familyId:'family',deviceId:'a',listId:'list',payload});
