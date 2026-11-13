@@ -6,7 +6,7 @@
  * and as the detail view after quick-add.
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -27,6 +27,7 @@ import type { RootStackParamList } from '../navigation/deepLinks';
 import { usePriceStore } from '../pricing/price-store';
 import { useListStore } from '../state/useListStore';
 import { crowdsourcedAdapter } from '../pricing/crowdsourced';
+import { canHydrateField, createSubmitGate, dirtyItemChanges, requireEditTarget, stepItemQuantity, type EditableItemField } from '../utils/itemEditDraft';
 import { storeIdFromName } from '../pricing/live-prices';
 
 // ─── Props ──────────────────────────────────────────────────────────────────
@@ -59,6 +60,10 @@ export default function ItemEditScreen({ route, navigation }: Props) {
   const [category, setCategory] = useState(existingItem?.category ?? 'other');
   const [notes, setNotes] = useState(existingItem?.notes ?? '');
   const [saving, setSaving] = useState(false);
+  const saveGate = useRef(createSubmitGate());
+  const dirtyFields = useRef(new Set<EditableItemField>());
+  const draftItemId = useRef(itemId);
+  const markDirty = (field: EditableItemField) => { dirtyFields.current.add(field); };
   const [showUnitPicker, setShowUnitPicker] = useState(false);
   // Price submission state
   const [showPriceForm, setShowPriceForm] = useState(false);
@@ -78,16 +83,21 @@ export default function ItemEditScreen({ route, navigation }: Props) {
     }
   }, [existingItem?.id, itemId, editStoreId, loadSinglePrice]);
 
-  // Sync local state when item changes (e.g., from re-hydration)
+  // Rehydrate untouched fields, but never erase an in-progress local edit.
   useEffect(() => {
-    if (existingItem) {
-      setName(existingItem.name);
-      setQuantity(existingItem.quantity);
-      setUnit(existingItem.unit);
-      setCategory(existingItem.category);
-      setNotes(existingItem.notes ?? '');
+    if (draftItemId.current !== itemId) {
+      dirtyFields.current.clear();
+      draftItemId.current = itemId;
     }
-  }, [existingItem]);
+    if (existingItem && !existingItem.isDeleted) {
+      const dirty = dirtyFields.current;
+      if (canHydrateField('name', dirty)) setName(existingItem.name);
+      if (canHydrateField('quantity', dirty)) setQuantity(existingItem.quantity);
+      if (canHydrateField('unit', dirty)) setUnit(existingItem.unit);
+      if (canHydrateField('category', dirty)) setCategory(existingItem.category);
+      if (canHydrateField('notes', dirty)) setNotes(existingItem.notes ?? '');
+    }
+  }, [existingItem, itemId]);
 
   // Save handler
   const handleSave = useCallback(async () => {
@@ -96,16 +106,15 @@ export default function ItemEditScreen({ route, navigation }: Props) {
       return;
     }
 
+    if (!saveGate.current.begin()) return;
     setSaving(true);
     try {
-      if (isEditing && existingItem) {
-        await updateItem(existingItem.id, {
-          name: name.trim(),
-          quantity,
-          unit,
-          category,
-          notes: notes.trim() || undefined,
-        });
+      if (isEditing) {
+        // Read current state, not a stale render snapshot after remote deletion.
+        const target = requireEditTarget(useGroceryStore.getState().items[itemId!], listId);
+        await updateItem(target.id, dirtyItemChanges({
+          name: name.trim(), quantity, unit, category, notes: notes.trim() || undefined,
+        }, dirtyFields.current));
       } else {
         // Get max sort order from existing items
         const listItems = Object.values(items).filter(
@@ -136,11 +145,12 @@ export default function ItemEditScreen({ route, navigation }: Props) {
           sortOrder: maxSort + 1,
         });
       }
-      navigation.goBack();
+      if (navigation.isFocused()) navigation.goBack();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save';
-      Alert.alert('Error', message);
+      if (navigation.isFocused()) Alert.alert('Error', message);
     } finally {
+      saveGate.current.end();
       setSaving(false);
     }
   }, [
@@ -150,6 +160,7 @@ export default function ItemEditScreen({ route, navigation }: Props) {
     category,
     notes,
     isEditing,
+    itemId,
     existingItem,
     items,
     listId,
@@ -160,14 +171,14 @@ export default function ItemEditScreen({ route, navigation }: Props) {
   ]);
 
   // Quantity stepper
-  const incrementQty = useCallback(() => setQuantity((q) => q + 1), []);
+  const incrementQty = useCallback(() => { dirtyFields.current.add('quantity'); setQuantity((q) => stepItemQuantity(q, 1)); }, []);
   const decrementQty = useCallback(
-    () => setQuantity((q) => Math.max(1, q - 1)),
+    () => { dirtyFields.current.add('quantity'); setQuantity((q) => stepItemQuantity(q, -1)); },
     [],
   );
   const handleQtyChange = useCallback((text: string) => {
     const num = parseInt(text, 10);
-    if (!isNaN(num) && num > 0) setQuantity(num);
+    if (Number.isSafeInteger(num) && num > 0) { dirtyFields.current.add('quantity'); setQuantity(num); }
   }, []);
 
   // Delete handler
@@ -181,10 +192,10 @@ export default function ItemEditScreen({ route, navigation }: Props) {
         onPress: async () => {
           try {
             await useGroceryStore.getState().deleteItem(existingItem.id);
-            navigation.goBack();
+            if (navigation.isFocused()) navigation.goBack();
           } catch (err) {
             const message = err instanceof Error ? err.message : 'Failed to delete';
-            Alert.alert('Error', message);
+            if (navigation.isFocused()) Alert.alert('Error', message);
           }
         },
       },
@@ -198,7 +209,7 @@ export default function ItemEditScreen({ route, navigation }: Props) {
     >
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
+        <TouchableOpacity onPress={() => { if (!saveGate.current.pending) navigation.goBack(); }} disabled={saving}>
           <Text style={styles.cancelText}>Cancel</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
@@ -219,7 +230,7 @@ export default function ItemEditScreen({ route, navigation }: Props) {
         <TextInput
           style={styles.nameInput}
           value={name}
-          onChangeText={setName}
+          onChangeText={(v) => { markDirty('name'); setName(v); }}
           placeholder="Item name"
           placeholderTextColor="#bbb"
           autoFocus={!isEditing}
@@ -267,6 +278,7 @@ export default function ItemEditScreen({ route, navigation }: Props) {
                   unit === u && styles.unitChipActive,
                 ]}
                 onPress={() => {
+                  markDirty('unit');
                   setUnit(u);
                   setShowUnitPicker(false);
                 }}
@@ -284,7 +296,7 @@ export default function ItemEditScreen({ route, navigation }: Props) {
             <TextInput
               style={styles.customUnitInput}
               value={!COMMON_UNITS.includes(unit) ? unit : ''}
-              onChangeText={(v) => setUnit(v || 'pcs')}
+              onChangeText={(v) => { markDirty('unit'); setUnit(v || 'pcs'); }}
               placeholder="Custom"
               placeholderTextColor="#bbb"
               autoCapitalize="none"
@@ -304,7 +316,7 @@ export default function ItemEditScreen({ route, navigation }: Props) {
                 styles.categoryChip,
                 category === cat && styles.categoryChipActive,
               ]}
-              onPress={() => setCategory(cat)}
+              onPress={() => { markDirty('category'); setCategory(cat); }}
             >
               <Text
                 style={[
@@ -325,7 +337,7 @@ export default function ItemEditScreen({ route, navigation }: Props) {
         <TextInput
           style={styles.notesInput}
           value={notes}
-          onChangeText={setNotes}
+          onChangeText={(v) => { markDirty('notes'); setNotes(v); }}
           placeholder="Add notes..."
           placeholderTextColor="#bbb"
           multiline

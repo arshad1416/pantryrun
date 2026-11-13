@@ -46,6 +46,7 @@ import { lookupProduct, submitNewProduct } from '../services/productLookup';
 import { fetchDealsForFSA, type FlippDealRow } from '../services/dealMatcher';
 import { getSettings } from '../config/settings';
 import { ensureBarcodeLookupConsent } from '../services/barcodeConsent';
+import { createSubmitGate } from '../utils/itemEditDraft';
 import { isTursoReady } from '../services/tursoClient';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
@@ -231,16 +232,25 @@ export default function HomeScreen({ navigation }: Props) {
     { mode: 'create'; value: string } | { mode: 'rename'; listId: string; value: string } | null
   >(null);
 
+  const nameSubmitGate = useRef(createSubmitGate());
+  const [nameSaving, setNameSaving] = useState(false);
+  const closeNameModal = useCallback(() => {
+    if (!nameSubmitGate.current.pending) setNameModal(null);
+  }, []);
+
   const handleCreateList = useCallback(() => {
+    if (nameSubmitGate.current.pending) return;
     setNameModal({ mode: 'create', value: '' });
   }, []);
 
   const handleRenameList = useCallback((list: GroceryList) => {
+    if (nameSubmitGate.current.pending) return;
     setNameModal({ mode: 'rename', listId: list.id, value: list.name });
   }, []);
 
   const handleNameModalSubmit = useCallback(async () => {
-    if (!nameModal) return;
+    if (!nameModal || !nameSubmitGate.current.begin()) return;
+    setNameSaving(true);
     const name = nameModal.value.trim() || 'My Grocery List';
     try {
       if (nameModal.mode === 'create') {
@@ -248,7 +258,7 @@ export default function HomeScreen({ navigation }: Props) {
         const familyId = firstMember?.familyId ?? 'default-family';
         const newList = await createList(name, familyId);
         setNameModal(null);
-        navigation.navigate('GroceryList', { listId: newList.id });
+        if (navigation.isFocused()) navigation.navigate('GroceryList', { listId: newList.id });
       } else {
         await updateList(nameModal.listId, { name });
         setNameModal(null);
@@ -258,6 +268,9 @@ export default function HomeScreen({ navigation }: Props) {
         'Could not save',
         err instanceof Error ? err.message : 'Please try again.',
       );
+    } finally {
+      nameSubmitGate.current.end();
+      setNameSaving(false);
     }
   }, [nameModal, members, createList, updateList, navigation]);
 
@@ -995,10 +1008,10 @@ export default function HomeScreen({ navigation }: Props) {
         visible={nameModal !== null}
         transparent
         animationType="fade"
-        onRequestClose={() => setNameModal(null)}
+        onRequestClose={closeNameModal}
         statusBarTranslucent
       >
-        <TouchableWithoutFeedback onPress={() => setNameModal(null)}>
+        <TouchableWithoutFeedback onPress={closeNameModal}>
           <View style={styles.modalOverlay}>
             <TouchableWithoutFeedback>
               <View style={[styles.listSelectorDialog, { backgroundColor: theme.cardBg }]}>
@@ -1008,6 +1021,7 @@ export default function HomeScreen({ navigation }: Props) {
                 <TextInput
                   style={[styles.nameInput, { color: theme.text, borderColor: theme.border, backgroundColor: theme.bg }]}
                   value={nameModal?.value ?? ''}
+                  editable={!nameSaving}
                   onChangeText={(t) =>
                     setNameModal((m) => (m ? { ...m, value: t } : m))
                   }
@@ -1022,20 +1036,23 @@ export default function HomeScreen({ navigation }: Props) {
                 <View style={styles.nameModalActions}>
                   <TouchableOpacity
                     style={styles.nameModalBtn}
-                    onPress={() => setNameModal(null)}
+                    onPress={closeNameModal}
+                    disabled={nameSaving}
+                    accessibilityState={{ disabled: nameSaving }}
                     accessibilityRole="button"
                     accessibilityLabel="Cancel"
                   >
-                    <Text style={{ color: theme.secondaryText, fontSize: 16, fontWeight: '600' }}>Cancel</Text>
+                    <Text style={{ color: theme.secondaryText, opacity: nameSaving ? 0.45 : 1, fontSize: 16, fontWeight: '600' }}>Cancel</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.nameModalBtn, styles.nameModalBtnPrimary, { backgroundColor: theme.primary }]}
                     onPress={handleNameModalSubmit}
+                    disabled={nameSaving}
                     accessibilityRole="button"
                     accessibilityLabel={nameModal?.mode === 'rename' ? 'Save name' : 'Create list'}
                   >
                     <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>
-                      {nameModal?.mode === 'rename' ? 'Save' : 'Create'}
+                      {nameSaving ? 'Saving…' : nameModal?.mode === 'rename' ? 'Save' : 'Create'}
                     </Text>
                   </TouchableOpacity>
                 </View>

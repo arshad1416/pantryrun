@@ -51,7 +51,9 @@ const PACKAGE_WORDS = new Set([
 ]);
 
 export function parseUnit(unit: string | undefined): [Dimension, number] | null {
-  return UNITS[(unit ?? '').trim().toLowerCase()] ?? null;
+  const key = (unit ?? '').trim().toLowerCase();
+  // User-entered units must not resolve Object.prototype properties.
+  return Object.prototype.hasOwnProperty.call(UNITS, key) ? UNITS[key] : null;
 }
 
 function isPackageWord(unit: string | undefined): boolean {
@@ -88,7 +90,11 @@ export function parseRequirement(qty: number | null | undefined, unit?: string):
   if (status === 'zero') return { ok: false, reason: 'quantity_zero' };
   const q = qty as number;
   const parsed = parseUnit(unit);
-  if (parsed) return { ok: true, requirement: { kind: 'amount', dimension: parsed[0], base: q * parsed[1] } };
+  if (parsed) {
+    const base = q * parsed[1];
+    if (!Number.isFinite(base)) return { ok: false, reason: 'quantity_invalid' };
+    return { ok: true, requirement: { kind: 'amount', dimension: parsed[0], base } };
+  }
   if (isPackageWord(unit)) return { ok: true, requirement: { kind: 'packages', packages: q } };
   return { ok: false, reason: 'unit_unknown' };
 }
@@ -220,7 +226,7 @@ export function purchaseFor(requirement: Requirement, pr: PriceResult): Purchase
   if (requirement.kind === 'packages') {
     // "2 bags" — any package-priced offer; a per-kg rate can't price a bag.
     if (basis.kind === 'measure') return { ok: false, reason: 'unit_incompatible' };
-    return packagePurchase(pr, Math.ceil(requirement.packages - 1e-9), basis.content, basis.dimension);
+    return packagePurchase(pr, Math.max(1, Math.ceil(requirement.packages - 1e-9)), basis.content, basis.dimension);
   }
 
   const { dimension, base } = requirement;
@@ -228,7 +234,7 @@ export function purchaseFor(requirement: Requirement, pr: PriceResult): Purchase
     if (basis.dimension !== dimension) return { ok: false, reason: 'unit_incompatible' };
     if (dimension === 'count') {
       // A per-each rate: whole pieces only.
-      return packagePurchase(pr, Math.ceil(base / basis.perBase - 1e-9), basis.perBase, 'count');
+      return packagePurchase(pr, Math.max(1, Math.ceil(base / basis.perBase - 1e-9)), basis.perBase, 'count');
     }
     const amount = base / basis.perBase;
     const priceCents = toCents(pr.price);
@@ -253,6 +259,8 @@ export function purchaseFor(requirement: Requirement, pr: PriceResult): Purchase
   }
   if (basis.content === null) return { ok: false, reason: 'pack_size_unknown' };
   // Small epsilon so 1000 mL of a 1 L carton is 1 carton, not 2.
-  const packages = Math.ceil(base / basis.content - 1e-9);
+  // A positive requirement always needs at least one package; the rounding
+  // tolerance must not turn a tiny quantity into a free/zero-package purchase.
+  const packages = Math.max(1, Math.ceil(base / basis.content - 1e-9));
   return packagePurchase(pr, packages, basis.content, dimension);
 }
