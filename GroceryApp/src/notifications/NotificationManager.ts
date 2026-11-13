@@ -258,7 +258,9 @@ async function encryptNotificationPayload(
   const s = await getSodium();
   const serialized = JSON.stringify(payload);
   const nonce = s.randombytes_buf(s.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
-  const additionalData = new TextEncoder().encode(listId);
+  // The native binding accepts only a string AAD; libsodium UTF-8 encodes it,
+  // so the authenticated bytes match the old TextEncoder output.
+  const additionalData = listId;
   const plaintext = new TextEncoder().encode(serialized);
   const cipherWithTag = s.crypto_aead_xchacha20poly1305_ietf_encrypt(
     plaintext, additionalData, null, nonce, key,
@@ -282,7 +284,8 @@ async function decryptNotificationPayload(
   const cipherWithTag = new Uint8Array(ciphertext.length + tag.length);
   cipherWithTag.set(ciphertext);
   cipherWithTag.set(tag, ciphertext.length);
-  const additionalData = new TextEncoder().encode(listId);
+  // Native binding: string AAD only (see encryptNotificationPayload).
+  const additionalData = listId;
   const plaintext = s.crypto_aead_xchacha20poly1305_ietf_decrypt(
     null, cipherWithTag, additionalData, nonce, key,
   );
