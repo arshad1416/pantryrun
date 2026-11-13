@@ -1,0 +1,14 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+  <!-- Enforced by Android, not a JS toggle: QA cannot send any network traffic. -->
+  <uses-permission android:name="android.permission.INTERNET" tools:node="remove"/>
+  <uses-permission android:name="com.android.vending.BILLING" tools:node="remove"/>
+  <application android:label="PantryRun QA" tools:replace="android:label">
+    <!-- Do not intercept production invite links from the user's other apps. -->
+    <activity android:name="com.shiftlogichq.pantryrun.MainActivity" tools:node="replace" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|smallestScreenSize" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:theme="@style/Theme.App.SplashScreen" android:exported="true" android:screenOrientation="portrait">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN"/>
+        <category android:name="android.intent.category.LAUNCHER"/>
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>

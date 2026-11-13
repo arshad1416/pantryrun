@@ -141,6 +141,14 @@ android {
             def enablePngCrunchInRelease = findProperty('android.enablePngCrunchInReleaseBuilds') ?: 'true'
             crunchPngs enablePngCrunchInRelease.toBoolean()
         }
+        // Standalone, offline phone QA: never shares production identity or data.
+        qa {
+            initWith release
+            applicationIdSuffix ".qa"
+            versionNameSuffix "-qa"
+            signingConfig signingConfigs.debug
+            matchingFallbacks = ['release']
+        }
     }
     packagingOptions {
         jniLibs {
